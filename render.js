@@ -1,8 +1,6 @@
 // render.js
-// - Bloom 필수 + FXAA
-// - InstancedMesh: per-instance (color / emissive / roughness / metalness / seed)
-// - Procedural rock surface (fbm noise + crater-ish ridges) via onBeforeCompile
-// - Trails: teleport/jump 감지해서 reset → "스파이크" 방지, merge/reset 지원
+// Three.js + postprocessing(Bloom 필수) + FXAA
+// InstancedMesh bodies + trails(ring buffer) + particles(budget)
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -33,9 +31,7 @@ function makeStarfield(count = 6000, radius = 2200) {
 
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
-  const mat = new THREE.PointsMaterial({
-    size: 1.6, vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false
-  });
+  const mat = new THREE.PointsMaterial({ size: 1.6, vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false });
   return new THREE.Points(geo, mat);
 }
 
@@ -122,8 +118,8 @@ function createParticleSystem(maxParticles) {
       const cosA = Math.cos(cone);
       const z = cosA + (1 - cosA) * u;
       const phi = 2 * Math.PI * v;
-      const rr = Math.sqrt(Math.max(0, 1 - z * z));
-      tmp.set(rr * Math.cos(phi), rr * Math.sin(phi), z);
+      const r = Math.sqrt(Math.max(0, 1 - z * z));
+      tmp.set(r * Math.cos(phi), r * Math.sin(phi), z);
 
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), ax);
       tmp.applyQuaternion(q).normalize();
@@ -200,20 +196,15 @@ function createParticleSystem(maxParticles) {
   return { points, spawnBurst, update, get aliveCount() { return aliveCount; } };
 }
 
-/**
- * Trails: 스파이크 방지 핵심
- * - body가 순간이동(merge/큰 보정/재할당)하면 자동 reset
- * - resetTrail(idx, x,y,z) 외부에서 호출 가능
- */
-function createTrailSystem(params) {
+function createTrailSystem(maxTrails, trailLen) {
   const trails = new Map();
+  const material = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.95 });
 
-  function ensure(scene, bodyIndex) {
-    let t = trails.get(bodyIndex);
-    if (t) return t;
-    if (trails.size >= params.maxTrails) return null;
+  function ensure(scene, bodyIndex, currentTrailLen) {
+    if (trails.has(bodyIndex)) return trails.get(bodyIndex);
+    if (trails.size >= maxTrails) return null;
 
-    const L = params.trailLength;
+    const L = currentTrailLen;
     const positions = new Float32Array(L * 3);
     const colors = new Float32Array(L * 3);
     const geo = new THREE.BufferGeometry();
@@ -221,18 +212,10 @@ function createTrailSystem(params) {
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     geo.setDrawRange(0, 0);
 
-    // ✅ trail마다 material을 따로 가져서 "페이드" 가능
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.95 });
-    const line = new THREE.Line(geo, mat);
+    const line = new THREE.Line(geo, material);
     scene.add(line);
 
-    t = {
-      geo, line, mat,
-      positions, colors,
-      head: 0, count: 0, L,
-      lastX: 0, lastY: 0, lastZ: 0,
-      fade: 1.0
-    };
+    const t = { geo, line, positions, colors, head: 0, count: 0, L };
     trails.set(bodyIndex, t);
     return t;
   }
@@ -242,66 +225,25 @@ function createTrailSystem(params) {
     if (!t) return;
     scene.remove(t.line);
     t.geo.dispose();
-    t.mat.dispose();
     trails.delete(bodyIndex);
   }
 
-  function resetTrail(scene, bodyIndex, x, y, z) {
-    const t = ensure(scene, bodyIndex);
-    if (!t) return;
-    // 버퍼를 현재 좌표로 채워 “먼 선분” 자체를 없앰
-    for (let i = 0; i < t.L; i++) {
-      t.positions[i * 3] = x;
-      t.positions[i * 3 + 1] = y;
-      t.positions[i * 3 + 2] = z;
-
-      t.colors[i * 3] = 0;
-      t.colors[i * 3 + 1] = 0;
-      t.colors[i * 3 + 2] = 0;
-    }
-    t.head = 0;
-    t.count = 0;
-    t.lastX = x; t.lastY = y; t.lastZ = z;
-    t.fade = 1.0;
-    t.geo.setDrawRange(0, 0);
-    t.geo.attributes.position.needsUpdate = true;
-    t.geo.attributes.color.needsUpdate = true;
-  }
-
-  function updateTrails(scene, bodies) {
-    const { pos, vel, active, emissive, materialId, radius } = bodies;
+  function updateTrails(scene, bodies, params) {
+    const { pos, vel, active, emissive, materialId } = bodies;
 
     for (const [idx, t] of trails.entries()) {
-      // trail length 변경 시 재생성
+      if (!active[idx]) { t.line.visible = false; continue; }
+      t.line.visible = true;
+
+      // trailLength 변경 시 재생성(안 끊기게 하려면 좀 더 복잡하지만 여기선 안정 우선)
       if (t.L !== params.trailLength) {
         remove(scene, idx);
+        ensure(scene, idx, params.trailLength);
         continue;
       }
-
-      if (!active[idx]) {
-        // ✅ 갑자기 툭 사라지지 않게 페이드
-        t.fade *= Math.exp(-2.2 * params._dtRealForFade);
-        t.mat.opacity = 0.95 * t.fade;
-        if (t.fade < 0.03) remove(scene, idx);
-        continue;
-      }
-
-      t.fade = 1.0;
-      t.mat.opacity = 0.95;
 
       const k = idx * 3;
       const x = pos[k], y = pos[k + 1], z = pos[k + 2];
-
-      // ✅ “텔레포트/점프” 감지 → 스파이크 방지 핵심
-      const dx = x - t.lastX, dy = y - t.lastY, dz = z - t.lastZ;
-      const jump = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const maxJump = params.trailTeleportFactor * Math.max(1.0, radius[idx]);
-      if (!Number.isFinite(jump) || jump > maxJump) {
-        resetTrail(scene, idx, x, y, z);
-      }
-
-      t.lastX = x; t.lastY = y; t.lastZ = z;
-
       const vx = vel[k], vy = vel[k + 1], vz = vel[k + 2];
       const spd = Math.sqrt(vx * vx + vy * vy + vz * vz);
 
@@ -311,7 +253,7 @@ function createTrailSystem(params) {
       t.positions[head * 3 + 2] = z;
 
       const e = emissive[idx];
-      const bright = Math.min(1, 0.08 + 0.016 * spd + 0.85 * e);
+      const bright = Math.min(1, 0.12 + 0.018 * spd + 0.75 * e);
 
       const tint = params.materials[materialId[idx]].trailTint;
       t.colors[head * 3] = tint.x * bright;
@@ -344,127 +286,7 @@ function createTrailSystem(params) {
     }
   }
 
-  return { trails, ensure, remove, resetTrail, updateTrails };
-}
-
-/**
- * InstancedMesh material에 "암석 행성" 디테일을 넣기 위한 onBeforeCompile
- * - fbm noise로 albedo/roughness 변화 + vertex displacement(미세 크레이터 느낌)
- * - per-instance emissive/rough/metal/seed 지원
- */
-function injectPlanetSurfaceShader(material, params) {
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.uDisp = { value: params.surfaceDisplacement };
-    shader.uniforms.uNoiseScale = { value: params.surfaceNoiseScale };
-    shader.uniforms.uEmissiveBoost = { value: params.emissiveBoost };
-
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        "#include <common>",
-        `#include <common>
-         attribute float aSeed;
-         attribute float aEmissive;
-         attribute float aRough;
-         attribute float aMetal;
-         varying float vSeed;
-         varying float vEmissive;
-         varying float vRough;
-         varying float vMetal;
-         varying float vN;
-
-         // value noise (짧고 충분히 “행성 표면” 설득력)
-         float hash11(float p){ p=fract(p*0.1031); p*=p+33.33; p*=p+p; return fract(p); }
-         float hash31(vec3 p){
-           p = fract(p*0.1031);
-           p += dot(p, p.yzx + 33.33);
-           return fract((p.x+p.y)*p.z);
-         }
-         float noise3(vec3 p){
-           vec3 i=floor(p), f=fract(p);
-           f=f*f*(3.0-2.0*f);
-           float n000=hash31(i+vec3(0,0,0));
-           float n100=hash31(i+vec3(1,0,0));
-           float n010=hash31(i+vec3(0,1,0));
-           float n110=hash31(i+vec3(1,1,0));
-           float n001=hash31(i+vec3(0,0,1));
-           float n101=hash31(i+vec3(1,0,1));
-           float n011=hash31(i+vec3(0,1,1));
-           float n111=hash31(i+vec3(1,1,1));
-           float nx00=mix(n000,n100,f.x);
-           float nx10=mix(n010,n110,f.x);
-           float nx01=mix(n001,n101,f.x);
-           float nx11=mix(n011,n111,f.x);
-           float nxy0=mix(nx00,nx10,f.y);
-           float nxy1=mix(nx01,nx11,f.y);
-           return mix(nxy0,nxy1,f.z);
-         }
-         float fbm(vec3 p){
-           float a=0.5; float s=0.0;
-           for(int i=0;i<5;i++){
-             s += a*noise3(p);
-             p *= 2.02;
-             a *= 0.5;
-           }
-           return s;
-         }`
-      )
-      .replace(
-        "#include <begin_vertex>",
-        `#include <begin_vertex>
-         vSeed = aSeed;
-         vEmissive = aEmissive;
-         vRough = aRough;
-         vMetal = aMetal;
-
-         // 암석 표면: 기본 fbm + ridge(크레이터 테두리 느낌)
-         vec3 p = position * uNoiseScale + vec3(aSeed*17.3, aSeed*7.1, aSeed*11.7);
-         float n = fbm(p);
-         float ridge = 1.0 - abs(2.0*n - 1.0);
-         float crater = pow(ridge, 3.0);
-
-         vN = clamp(0.55*n + 0.45*crater, 0.0, 1.0);
-
-         // 미세 변위(행성 디테일)
-         float disp = (vN - 0.5) * 2.0 * uDisp;
-         transformed += normal * disp;`
-      );
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        "#include <common>",
-        `#include <common>
-         varying float vSeed;
-         varying float vEmissive;
-         varying float vRough;
-         varying float vMetal;
-         varying float vN;
-         uniform float uEmissiveBoost;`
-      )
-      // baseColor 변조: 더 이상 “별 점”처럼 흰색으로 뭉개지지 않게, 표면 톤 변화
-      .replace(
-        "#include <color_fragment>",
-        `#include <color_fragment>
-         // vN 기반 표면 톤 변화(암석/빙질 모두 디테일)
-         diffuseColor.rgb *= (0.82 + 0.30 * vN);`
-      )
-      // roughness/metalness per-instance 적용
-      .replace(
-        "float roughnessFactor = roughness;",
-        "float roughnessFactor = clamp(roughness * vRough * (0.90 + 0.25 * vN), 0.02, 1.0);"
-      )
-      .replace(
-        "float metalnessFactor = metalness;",
-        "float metalnessFactor = clamp(metalness * vMetal, 0.0, 1.0);"
-      )
-      // emissive per-instance 추가 → “고온일수록 발광 + bloom”
-      .replace(
-        "#include <emissivemap_fragment>",
-        `#include <emissivemap_fragment>
-         totalEmissiveRadiance += diffuseColor.rgb * vEmissive * uEmissiveBoost;`
-      );
-
-    material.userData._shader = shader;
-  };
+  return { ensure, remove, updateTrails, trails };
 }
 
 export function createRenderSystem(container, params, bodies) {
@@ -486,51 +308,34 @@ export function createRenderSystem(container, params, bodies) {
   controls.dampingFactor = 0.06;
   controls.maxDistance = 12000;
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.18));
-  const dir = new THREE.DirectionalLight(0xffffff, 0.75);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.45);
   dir.position.set(1, 1, 0.6);
   scene.add(dir);
 
   scene.add(makeStarfield(params.starCount, params.starRadius));
 
-  // ✅ 행성 디테일이 보이려면 기본 지오메트리도 좀 촘촘해야 함
-  const sphereGeo = new THREE.IcosahedronGeometry(1, 5);
-
+  const sphereGeo = new THREE.IcosahedronGeometry(1, 2);
   const bodyMat = new THREE.MeshStandardMaterial({
-    metalness: 0.08,
-    roughness: 0.75,
+    metalness: 0.1,
+    roughness: 0.65,
     vertexColors: true,
-    emissive: new THREE.Color(0x000000),   // ✅ 기본 emissive 제거 (별처럼 뭉개지는 원인)
+    emissive: new THREE.Color(0xffffff),
     emissiveIntensity: 1.0
   });
-
-  // ✅ “암석 행성” 디테일 셰이더 주입
-  injectPlanetSurfaceShader(bodyMat, params);
 
   const inst = new THREE.InstancedMesh(sphereGeo, bodyMat, bodies.capacity);
   inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
-  // per-instance attributes
   const instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(bodies.capacity * 3), 3);
   inst.instanceColor = instanceColor;
-
-  const aSeed = new THREE.InstancedBufferAttribute(new Float32Array(bodies.capacity), 1);
-  const aEmissive = new THREE.InstancedBufferAttribute(new Float32Array(bodies.capacity), 1);
-  const aRough = new THREE.InstancedBufferAttribute(new Float32Array(bodies.capacity), 1);
-  const aMetal = new THREE.InstancedBufferAttribute(new Float32Array(bodies.capacity), 1);
-
-  inst.geometry.setAttribute("aSeed", aSeed);
-  inst.geometry.setAttribute("aEmissive", aEmissive);
-  inst.geometry.setAttribute("aRough", aRough);
-  inst.geometry.setAttribute("aMetal", aMetal);
-
   scene.add(inst);
 
   const arrow = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(0,0,0), 10, 0x88ccff);
   arrow.visible = false;
   scene.add(arrow);
 
-  const trailSys = createTrailSystem(params);
+  const trailSys = createTrailSystem(params.maxTrails, params.trailLength);
   const particleSys = createParticleSystem(params.particleBudgetHard);
   scene.add(particleSys.points);
 
@@ -574,7 +379,6 @@ export function createRenderSystem(container, params, bodies) {
       const k = i * 3;
       tmpP.set(pos[k], pos[k + 1], pos[k + 2]);
 
-      // 스핀(간이) → 표면 디테일이 돌면서 행성처럼 보임
       const ox = omega[k], oy = omega[k + 1], oz = omega[k + 2];
       tmpE.set(ox * 0.02, oy * 0.02, oz * 0.02);
       tmpQ.setFromEuler(tmpE);
@@ -584,38 +388,19 @@ export function createRenderSystem(container, params, bodies) {
       const vap = vaporFrac[i];
 
       const baseR = radius[i];
+      const squash = 1 - 0.22 * d - 0.18 * melt;
+      const stretch = 1 + 0.28 * d + 0.12 * (Math.random() - 0.5);
+      const puff = 1 + 0.9 * vap;
 
-      // 찌그러짐/박리/용융 느낌을 더 “행성”에서 보이게
-      const squash = 1 - 0.26 * d - 0.20 * melt;
-      const stretch = 1 + 0.30 * d;
-      const puff = 1 + 0.70 * vap;
-
-      tmpS.set(baseR * stretch * puff, baseR * squash * puff, baseR * (0.92 + 0.22 * d) * puff);
+      tmpS.set(baseR * stretch * puff, baseR * squash * puff, baseR * (0.92 + 0.18 * d) * puff);
 
       tmpMat.compose(tmpP, tmpQ, tmpS);
       inst.setMatrixAt(drawCount, tmpMat);
 
       const mat = params.materials[materialId[i]];
       const e = emissive[i];
-
-      // base color는 “암석/금속/얼음”에 맞게, 고온은 glow 쪽으로
-      const c = mat.baseColor.clone().lerp(mat.glowColor, Math.min(1, 0.85 * e + 0.30 * vap));
+      const c = mat.baseColor.clone().lerp(mat.glowColor, Math.min(1, 0.65 * e + 0.25 * vap));
       instanceColor.setXYZ(drawCount, c.x, c.y, c.z);
-
-      // ✅ per-instance emissive: 고온일수록 bloom
-      aEmissive.setX(drawCount, Math.min(1, 0.08 + 1.25 * e + 0.6 * vap));
-
-      // ✅ rough/metal: 재료별 룩 차이 + 용융되면 거칠기 감소
-      const rough = Math.max(0.08, Math.min(1, mat.roughnessBase * (1 - 0.45 * melt)));
-      const metal = Math.max(0.0, Math.min(1, mat.metalnessBase));
-
-      aRough.setX(drawCount, rough);
-      aMetal.setX(drawCount, metal);
-
-      // ✅ seed: 같은 재료라도 표면 패턴이 전부 달라지게
-      // index 기반 + 재료 기반 섞어서 안정적으로 고정
-      const seed = ((i * 1103515245 + materialId[i] * 12345) >>> 0) / 4294967295;
-      aSeed.setX(drawCount, seed);
 
       drawCount++;
     }
@@ -623,29 +408,12 @@ export function createRenderSystem(container, params, bodies) {
     inst.count = drawCount;
     inst.instanceMatrix.needsUpdate = true;
     inst.instanceColor.needsUpdate = true;
-    aSeed.needsUpdate = true;
-    aEmissive.needsUpdate = true;
-    aRough.needsUpdate = true;
-    aMetal.needsUpdate = true;
-
-    // 셰이더 유니폼 업데이트(런타임 UI)
-    const sh = bodyMat.userData._shader;
-    if (sh) {
-      sh.uniforms.uDisp.value = params.surfaceDisplacement;
-      sh.uniforms.uNoiseScale.value = params.surfaceNoiseScale;
-      sh.uniforms.uEmissiveBoost.value = params.emissiveBoost;
-    }
   }
 
-  function render(dtReal) {
-    // ✅ Add Body Mode일 때 카메라 회전/이동 잠금
-    controls.enabled = !params.addBodyMode;
+  function render(dt) {
     controls.update();
 
-    // trails 페이드용 dt 공유
-    params._dtRealForFade = dtReal;
-
-    particleSys.update(dtReal, 0.0, params.wind);
+    particleSys.update(dt, 0.0, params.wind);
 
     bloom.strength = params.bloomStrength;
     bloom.radius = params.bloomRadius;
@@ -654,7 +422,7 @@ export function createRenderSystem(container, params, bodies) {
     renderer.toneMappingExposure = params.exposure;
 
     updateBodyInstances();
-    trailSys.updateTrails(scene, bodies);
+    trailSys.updateTrails(scene, bodies, params);
 
     composer.render();
   }
