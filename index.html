@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3D N-Body Impact / Fracture / Thermal Simulator</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#000; }
+    #app { width:100%; height:100%; }
+    #overlay {
+      position: fixed; left: 12px; top: 12px;
+      color: rgba(255,255,255,0.92);
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      padding: 10px 12px;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      pointer-events: none;
+      max-width: 44vw;
+      white-space: pre;
+    }
+    #hint {
+      position: fixed; right: 12px; bottom: 12px;
+      color: rgba(255,255,255,0.85);
+      font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", sans-serif;
+      padding: 10px 12px;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      max-width: 42vw;
+    }
+    a { color: #9bd; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="overlay"></div>
+  <div id="hint">
+    <b>Controls</b><br/>
+    - Orbit: drag / zoom / pan (Shift+drag)<br/>
+    - <b>Add Body Mode</b>: GUI에서 ON → 화면 클릭+드래그로 속도 지정<br/>
+    - Presets: Galaxy / High-speed Impact / Re-accretion<br/>
+    - Bloom / Trails / Budget / dt / ε / G 조절 가능
+  </div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
