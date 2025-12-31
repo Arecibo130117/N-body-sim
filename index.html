@@ -29,8 +29,17 @@
       border-radius: 10px;
       max-width: 42vw;
     }
-    a { color: #9bd; }
   </style>
+
+  <!-- ✅ importmap: 브라우저에서 bare specifier "three"를 해결 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="app"></div>
