@@ -89,17 +89,8 @@ function makeMaterials() {
       emissiveScale: 0.95,
       cooling: 0.55,
       fragmentAlpha: 2.4,
-        // ✅ 표면값은 의미 약함 → 낮게 고정
-      roughnessBase: 0.15,
+      roughnessBase: 0.1,
       metalnessBase: 0.0,
-
-      // ✅ 가스 전용(추가)
-      isGas: true,
-      opacity: 0.22,        // 코어 투명도
-      rimStrength: 1.4,     // 가장자리 광량
-      noiseFlow: 0.6        // 소용돌이 느낌(가벼운 애니메이션)
-      glowColor: v(0.70, 0.85, 1.00),
-      trailTint: v(0.55, 0.70, 0.95),
     }
   ];
 }
