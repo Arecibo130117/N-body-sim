@@ -98,7 +98,6 @@ function makeMaterials() {
       opacity: 0.22,        // 코어 투명도
       rimStrength: 1.4,     // 가장자리 광량
       noiseFlow: 0.6        // 소용돌이 느낌(가벼운 애니메이션)
-      baseColor: v(0.45, 0.55, 0.70),
       glowColor: v(0.70, 0.85, 1.00),
       trailTint: v(0.55, 0.70, 0.95),
     }
