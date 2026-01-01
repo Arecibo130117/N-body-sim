@@ -354,26 +354,30 @@ function createTrailSystem(params) {
  */
 function injectPlanetSurfaceShader(material, params) {
   material.onBeforeCompile = (shader) => {
+    // ✅ uniforms 등록
     shader.uniforms.uDisp = { value: params.surfaceDisplacement };
     shader.uniforms.uNoiseScale = { value: params.surfaceNoiseScale };
     shader.uniforms.uEmissiveBoost = { value: params.emissiveBoost };
 
+    // ✅ vertex 쪽에 uniform 선언이 반드시 필요
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
         `#include <common>
+         uniform float uDisp;
+         uniform float uNoiseScale;
+
          attribute float aSeed;
          attribute float aEmissive;
          attribute float aRough;
          attribute float aMetal;
+
          varying float vSeed;
          varying float vEmissive;
          varying float vRough;
          varying float vMetal;
          varying float vN;
 
-         // value noise (짧고 충분히 “행성 표면” 설득력)
-         float hash11(float p){ p=fract(p*0.1031); p*=p+33.33; p*=p+p; return fract(p); }
          float hash31(vec3 p){
            p = fract(p*0.1031);
            p += dot(p, p.yzx + 33.33);
@@ -416,7 +420,6 @@ function injectPlanetSurfaceShader(material, params) {
          vRough = aRough;
          vMetal = aMetal;
 
-         // 암석 표면: 기본 fbm + ridge(크레이터 테두리 느낌)
          vec3 p = position * uNoiseScale + vec3(aSeed*17.3, aSeed*7.1, aSeed*11.7);
          float n = fbm(p);
          float ridge = 1.0 - abs(2.0*n - 1.0);
@@ -424,30 +427,28 @@ function injectPlanetSurfaceShader(material, params) {
 
          vN = clamp(0.55*n + 0.45*crater, 0.0, 1.0);
 
-         // 미세 변위(행성 디테일)
          float disp = (vN - 0.5) * 2.0 * uDisp;
          transformed += normal * disp;`
       );
 
+    // ✅ fragment 쪽에도 uniform/varying 선언
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
         `#include <common>
+         uniform float uEmissiveBoost;
+
          varying float vSeed;
          varying float vEmissive;
          varying float vRough;
          varying float vMetal;
-         varying float vN;
-         uniform float uEmissiveBoost;`
+         varying float vN;`
       )
-      // baseColor 변조: 더 이상 “별 점”처럼 흰색으로 뭉개지지 않게, 표면 톤 변화
       .replace(
         "#include <color_fragment>",
         `#include <color_fragment>
-         // vN 기반 표면 톤 변화(암석/빙질 모두 디테일)
          diffuseColor.rgb *= (0.82 + 0.30 * vN);`
       )
-      // roughness/metalness per-instance 적용
       .replace(
         "float roughnessFactor = roughness;",
         "float roughnessFactor = clamp(roughness * vRough * (0.90 + 0.25 * vN), 0.02, 1.0);"
@@ -456,7 +457,6 @@ function injectPlanetSurfaceShader(material, params) {
         "float metalnessFactor = metalness;",
         "float metalnessFactor = clamp(metalness * vMetal, 0.0, 1.0);"
       )
-      // emissive per-instance 추가 → “고온일수록 발광 + bloom”
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
@@ -465,6 +465,9 @@ function injectPlanetSurfaceShader(material, params) {
 
     material.userData._shader = shader;
   };
+
+  // ✅ onBeforeCompile 변경 후 재컴파일 유도
+  material.needsUpdate = true;
 }
 
 export function createRenderSystem(container, params, bodies) {
