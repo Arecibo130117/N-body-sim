@@ -23,6 +23,10 @@ export function createUI(params, callbacks) {
   fVis.add(params, "trailLength", 32, 256, 1);
   fVis.add(params, "maxTrails", 16, 256, 1);
   fVis.add(params, "starCount", 500, 15000, 100);
+  fVis.add(params, "surfaceDisplacement", 0.0, 0.10, 0.001);
+  fVis.add(params, "surfaceNoiseScale", 1.0, 8.0, 0.1);
+  fVis.add(params, "emissiveBoost", 0.5, 6.0, 0.1);
+
   fVis.open();
 
   const fBud = gui.addFolder("Performance / Budget");
