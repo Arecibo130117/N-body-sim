@@ -13,6 +13,8 @@ function makeMaterials() {
   return [
     {
       name: "rock",
+      roughnessBase: 0.92,
+      metalnessBase: 0.05,
       rho: 2600,
       restitution: 0.35,
       friction: 0.55,
@@ -32,6 +34,8 @@ function makeMaterials() {
     },
     {
       name: "ice",
+      roughnessBase: 0.65,
+      metalnessBase: 0.00,
       rho: 920,
       restitution: 0.25,
       friction: 0.18,
@@ -51,6 +55,8 @@ function makeMaterials() {
     },
     {
       name: "metal",
+      roughnessBase: 0.45,
+      metalnessBase: 0.95,
       rho: 7800,
       restitution: 0.45,
       friction: 0.45,
@@ -83,6 +89,15 @@ function makeMaterials() {
       emissiveScale: 0.95,
       cooling: 0.55,
       fragmentAlpha: 2.4,
+        // ✅ 표면값은 의미 약함 → 낮게 고정
+      roughnessBase: 0.15,
+      metalnessBase: 0.0,
+
+      // ✅ 가스 전용(추가)
+      isGas: true,
+      opacity: 0.22,        // 코어 투명도
+      rimStrength: 1.4,     // 가장자리 광량
+      noiseFlow: 0.6        // 소용돌이 느낌(가벼운 애니메이션)
       baseColor: v(0.45, 0.55, 0.70),
       glowColor: v(0.70, 0.85, 1.00),
       trailTint: v(0.55, 0.70, 0.95),
@@ -232,6 +247,14 @@ const params = {
   spawnTemp: 340,
   spawnSpeedScale: 12,
   spawnMaterialPreset: "rock",
+    // --- Surface detail (행성 디테일) ---
+  surfaceDisplacement: 0.035,   // 커질수록 크레이터/요철이 강해짐
+  surfaceNoiseScale: 3.8,       // 높을수록 디테일 촘촘
+  emissiveBoost: 2.2,           // 고온일수록 bloom 강해짐
+
+  // --- Trail spike 방지 ---
+  trailTeleportFactor: 40.0,    // 반지름*factor 이상 점프면 trail reset
+
 
   wind: new THREE.Vector3(0.4, 0.0, 0.2),
 };
