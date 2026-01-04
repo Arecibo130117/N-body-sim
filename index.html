@@ -1,21 +1,18 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>N-Body Sim v2: Meteor Tails & Advanced Control</title>
+    <title>High-Fidelity N-Body Gravity & Fracture Simulator</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #050508; font-family: 'Segoe UI', sans-serif; }
+        body { margin: 0; overflow: hidden; background-color: #050508; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
+        #ui-container { position: absolute; top: 10px; right: 10px; }
+        .label { color: white; position: absolute; pointer-events: none; font-size: 12px; opacity: 0.8; }
         #instructions {
-            position: absolute; bottom: 20px; left: 20px; color: rgba(255,255,255,0.7);
-            pointer-events: none; user-select: none; text-shadow: 0 0 5px black;
+            position: absolute; bottom: 20px; left: 20px; color: rgba(255,255,255,0.6);
+            pointer-events: none; user-select: none;
         }
         b { color: #ff9d00; }
-        .mode-indicator {
-            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-            font-size: 24px; font-weight: bold; color: white; text-shadow: 0 0 10px rgba(0,0,0,0.8);
-            pointer-events: none; opacity: 0.8;
-        }
     </style>
     <script type="importmap">
         {
@@ -28,11 +25,11 @@
 </head>
 <body>
     <div id="canvas-container"></div>
-    <div class="mode-indicator" id="modeLabel">VIEW MODE</div>
     <div id="instructions">
-        <h2>Sim v2.0</h2>
-        <p>Current Mode: <span id="modeText">View (Orbit)</span></p>
-        <p>Physics: <b>Velocity Verlet</b> + <b>Thermal Fragmentation</b></p>
+        <h2>N-Body Fracture & Thermal Sim</h2>
+        <p>Left Click + Drag: <b>Spawn Body</b></p>
+        <p>Right Click / Wheel: <b>Camera</b></p>
+        <p>Physics: <b>Velocity Verlet</b></p>
     </div>
 
     <script type="module">
@@ -44,61 +41,80 @@
         import GUI from 'three/addons/libs/lil-gui.module.min.js';
 
         // ==========================================
-        // 1. CONFIG
+        // 1. CONFIGURATION & CONSTANTS
         // ==========================================
         const CONFIG = {
-            // Physics
-            G: 1.0,
-            dt: 0.016,
-            subSteps: 2,
-            maxBodies: 500,
+            G: 0.5,                // Gravitational Constant
+            softening: 0.5,        // Gravity Softening (epsilon)
+            dt: 0.016,             // Time step
+            subSteps: 2,           // Physics substeps per frame
+            maxBodies: 400,        // Max bodies to prevent lag
+            trailLength: 60,       // Trail length
             
-            // Interaction
-            spawnMass: 20,       // Default spawn mass
-            spawnMode: false,    // Toggle
+            // Fracture Props
+            fractureThreshold: 15, // Kinetic Energy density required to fracture
+            minFragmentMass: 0.2,  // Minimum mass to allow further splitting
             
-            // Visuals
-            trailLength: 120,    // Longer trails
-            particleLimit: 5000, // Budget for smoke/fire
+            // Thermal Props
+            heatDecay: 0.995,      // Cooling rate
+            heatToGlow: 2.0,       // Multiplier for emission
             
-            // Thermal
-            heatDecay: 0.992,
-            heatThreshold: 300,  // Temp needed to start smoking
+            // Materials
+            materials: {
+                rock: { density: 1.0, color: 0x888888, emit: 0x331100, roughness: 0.9 },
+                metal: { density: 3.0, color: 0xaaaaaa, emit: 0x001133, roughness: 0.4 },
+                ice: { density: 0.5, color: 0xaaccff, emit: 0x0044aa, roughness: 0.1 }
+            }
         };
 
         const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 
         // ==========================================
-        // 2. PHYSICS CORE
+        // 2. PHYSICS ENGINE (INTEGRATOR & COLLISION)
         // ==========================================
+        
         class Body {
             constructor(mass, pos, vel, type = 'rock', temp = 0) {
                 this.id = Math.random().toString(36).substr(2, 9);
                 this.mass = mass;
                 this.invMass = mass > 0 ? 1 / mass : 0;
                 
+                // State Vectors
                 this.pos = pos.clone();
+                this.prevPos = pos.clone(); // For Verlet initialization or unused
                 this.vel = vel.clone();
                 this.acc = new THREE.Vector3(0, 0, 0);
                 
+                // Material & Physical Properties
                 this.type = type;
-                // Density-based radius (Approx)
-                const density = type === 'metal' ? 3.0 : (type === 'ice' ? 0.8 : 1.5);
-                this.radius = Math.pow((3 * mass) / (4 * Math.PI * density), 1/3);
+                this.matProps = CONFIG.materials[type];
+                // Radius derived from volume (Sphere assumption): V = m/rho, r = (3V/4pi)^(1/3)
+                this.radius = Math.pow((3 * mass) / (4 * Math.PI * this.matProps.density), 1/3);
                 
-                this.temperature = temp;
-                this.color = new THREE.Color(type === 'ice' ? 0xaaccff : (type === 'metal' ? 0xaaaaaa : 0x886644));
+                // Thermal State
+                this.temperature = temp; // Kelvin-like arbitrary unit
+                this.maxTemp = 0;        // Track peak temp for scarring
+                
+                // Visual Mesh (will be assigned by renderer)
+                this.mesh = null;
+                this.trailIdx = 0;
+                
+                // Flags
+                this.isFragment = false;
+                this.toBeRemoved = false;
             }
 
             updateThermal() {
+                // Cooling
                 this.temperature *= CONFIG.heatDecay;
-                if(this.temperature < 10) this.temperature = 0;
+                if(this.temperature < 0.1) this.temperature = 0;
             }
         }
 
         class PhysicsSystem {
             constructor() {
                 this.bodies = [];
+                this.particles = []; // For fire/smoke
             }
 
             addBody(body) {
@@ -109,20 +125,24 @@
                 return null;
             }
 
+            // Velocity Verlet Integration
             integrate(dt) {
                 const halfDt = 0.5 * dt;
-                
-                // 1. Verlet 1st Step
+
+                // 1. First Verlet Step: v(t + 0.5dt) = v(t) + 0.5 * a(t) * dt
+                //    r(t + dt) = r(t) + v(t + 0.5dt) * dt
                 for (const b of this.bodies) {
                     b.vel.addScaledVector(b.acc, halfDt);
                     b.pos.addScaledVector(b.vel, dt);
                 }
 
-                // 2. Forces
+                // 2. Compute Forces (Gravity) at new positions -> a(t + dt)
                 this.computeGravity();
+
+                // 3. Resolve Collisions (modifies pos/vel and triggers fracture)
                 this.resolveCollisions(dt);
 
-                // 3. Verlet 2nd Step
+                // 4. Second Verlet Step: v(t + dt) = v(t + 0.5dt) + 0.5 * a(t + dt) * dt
                 for (const b of this.bodies) {
                     b.vel.addScaledVector(b.acc, halfDt);
                     b.updateThermal();
@@ -131,381 +151,398 @@
 
             computeGravity() {
                 const N = this.bodies.length;
-                for (let i = 0; i < N; i++) this.bodies[i].acc.set(0,0,0);
+                // Reset accelerations
+                for (let i = 0; i < N; i++) this.bodies[i].acc.set(0, 0, 0);
 
                 const G = CONFIG.G;
-                const eps = 0.5; // Softening
+                const epsSq = CONFIG.softening * CONFIG.softening;
                 const vec = new THREE.Vector3();
 
                 for (let i = 0; i < N; i++) {
                     for (let j = i + 1; j < N; j++) {
                         const A = this.bodies[i];
                         const B = this.bodies[j];
+
                         vec.subVectors(B.pos, A.pos);
                         const distSq = vec.lengthSq();
-                        const f = G / Math.pow(distSq + eps*eps, 1.5);
+                        const dist = Math.sqrt(distSq);
+                        
+                        // F = G * m1 * m2 / r^2
+                        // a1 = F/m1 = G * m2 / r^2 * (dir)
+                        // Softened: G * m / (r^2 + eps^2)^(3/2)
+                        
+                        const f = G / Math.pow(distSq + epsSq, 1.5);
+                        
+                        // Accumulate acceleration
+                        // Acc A += f * mB * vec
+                        A.acc.x += f * B.mass * vec.x;
+                        A.acc.y += f * B.mass * vec.y;
+                        A.acc.z += f * B.mass * vec.z;
 
-                        const fx = f * vec.x;
-                        const fy = f * vec.y;
-                        const fz = f * vec.z;
-
-                        A.acc.x += fx * B.mass;
-                        A.acc.y += fy * B.mass;
-                        A.acc.z += fz * B.mass;
-                        B.acc.x -= fx * A.mass;
-                        B.acc.y -= fy * A.mass;
-                        B.acc.z -= fz * A.mass;
+                        // Acc B -= f * mA * vec (Newton's 3rd law)
+                        B.acc.x -= f * A.mass * vec.x;
+                        B.acc.y -= f * A.mass * vec.y;
+                        B.acc.z -= f * A.mass * vec.z;
                     }
                 }
             }
 
             resolveCollisions(dt) {
-                const removed = new Set();
                 const newBodies = [];
+                const removedIndices = new Set();
+                const N = this.bodies.length;
                 const vec = new THREE.Vector3();
                 const relVel = new THREE.Vector3();
 
-                for (let i = 0; i < this.bodies.length; i++) {
-                    if (removed.has(i)) continue;
-                    for (let j = i + 1; j < this.bodies.length; j++) {
-                        if (removed.has(j)) continue;
+                // Simple Broadphase (O(N^2) for demo is fine up to ~500 bodies)
+                for (let i = 0; i < N; i++) {
+                    if (removedIndices.has(i)) continue;
+                    for (let j = i + 1; j < N; j++) {
+                        if (removedIndices.has(j)) continue;
 
                         const A = this.bodies[i];
                         const B = this.bodies[j];
+                        
                         vec.subVectors(B.pos, A.pos);
-                        const dist = vec.length();
+                        const distSq = vec.lengthSq();
                         const minDist = A.radius + B.radius;
 
-                        if (dist < minDist) {
-                            vec.normalize();
+                        // Collision detected
+                        if (distSq < minDist * minDist) {
+                            const dist = Math.sqrt(distSq);
+                            const overlap = minDist - dist;
+                            
+                            // Normal
+                            const normal = vec.clone().normalize(); // A to B
+
+                            // Relative Velocity
                             relVel.subVectors(B.vel, A.vel);
-                            const vRel = relVel.dot(vec);
+                            const velAlongNormal = relVel.dot(normal);
 
-                            if (vRel < 0) {
-                                // Impact Physics
-                                const restitution = 0.3;
-                                const impulseMag = -(1 + restitution) * vRel / (A.invMass + B.invMass);
-                                const impulse = vec.clone().multiplyScalar(impulseMag);
+                            // Only resolve if moving towards each other
+                            if (velAlongNormal < 0) {
+                                // 1. Calculate Impact Physics
+                                const restitution = 0.5; // Inelastic
+                                const jImpulse = -(1 + restitution) * velAlongNormal / (A.invMass + B.invMass);
+                                
+                                // Impulse vector
+                                const impulse = normal.clone().multiplyScalar(jImpulse);
+                                
+                                // Energy Analysis for Fracture
+                                // Reduced mass mu = (m1*m2)/(m1+m2)
+                                const mu = (A.mass * B.mass) / (A.mass + B.mass);
+                                // Impact Energy E = 0.5 * mu * v_rel^2
+                                const impactEnergy = 0.5 * mu * velAlongNormal * velAlongNormal;
+                                
+                                // Heat generation (Dissipated Energy approximation)
+                                const dissipatedEnergy = impactEnergy * (1 - restitution);
+                                const heatA = dissipatedEnergy * (B.mass / (A.mass + B.mass));
+                                const heatB = dissipatedEnergy * (A.mass / (A.mass + B.mass));
+                                
+                                A.temperature += (heatA / A.mass) * 0.5; // Specific heat approx
+                                B.temperature += (heatB / B.mass) * 0.5;
 
-                                // Heat Gen
-                                const ke = 0.5 * (A.mass * B.mass / (A.mass + B.mass)) * vRel * vRel;
-                                A.temperature += (ke / A.mass) * 0.8;
-                                B.temperature += (ke / B.mass) * 0.8;
+                                // Fracture Logic
+                                // Energy Density Q = E_impact / Total Mass
+                                const Q = impactEnergy / (A.mass + B.mass);
+                                const isFracture = Q > CONFIG.fractureThreshold;
 
-                                // Separation
-                                const correction = (minDist - dist) / (A.invMass + B.invMass) * 0.8;
-                                A.pos.sub(vec.clone().multiplyScalar(correction * A.invMass));
-                                B.pos.add(vec.clone().multiplyScalar(correction * B.invMass));
+                                // Positional Correction (prevent sinking)
+                                const correction = normal.clone().multiplyScalar(overlap / (A.invMass + B.invMass) * 0.8);
+                                A.pos.sub(correction.clone().multiplyScalar(A.invMass));
+                                B.pos.add(correction.clone().multiplyScalar(B.invMass));
 
-                                // Fracture?
-                                if (ke / (A.mass + B.mass) > 15) {
-                                    // Simple split logic
-                                    removed.add(i);
-                                    removed.add(j);
-                                    this.fracture(A, B, ke, newBodies);
-                                    visuals.triggerFlash(A.pos.clone().add(B.pos).multiplyScalar(0.5), ke);
+                                if (isFracture && (A.mass > CONFIG.minFragmentMass || B.mass > CONFIG.minFragmentMass)) {
+                                    // Handle Fracture
+                                    this.fractureBodies(A, B, impactEnergy, newBodies);
+                                    removedIndices.add(i);
+                                    removedIndices.add(j);
+                                    
+                                    // Visual Flash
+                                    visuals.triggerFlash(A.pos.clone().add(B.pos).multiplyScalar(0.5), impactEnergy);
                                 } else {
+                                    // Standard Bounce
                                     A.vel.sub(impulse.clone().multiplyScalar(A.invMass));
                                     B.vel.add(impulse.clone().multiplyScalar(B.invMass));
+                                    
+                                    // Add some tangential friction/spin effect (approximated)
+                                    const tangent = relVel.clone().sub(normal.clone().multiplyScalar(velAlongNormal)).normalize();
+                                    const friction = 0.1;
+                                    const jt = -relVel.dot(tangent) * friction / (A.invMass + B.invMass);
+                                    const tangentImpulse = tangent.multiplyScalar(jt);
+                                    
+                                    A.vel.sub(tangentImpulse.clone().multiplyScalar(A.invMass));
+                                    B.vel.add(tangentImpulse.clone().multiplyScalar(B.invMass));
                                 }
                             }
                         }
                     }
                 }
 
-                if (removed.size > 0) {
-                    this.bodies = this.bodies.filter((_, i) => !removed.has(i));
+                // Cleanup and Merging
+                // Filter out removed bodies
+                if (removedIndices.size > 0) {
+                    this.bodies = this.bodies.filter((_, idx) => !removedIndices.has(idx));
+                    // Remove meshes from scene
                     visuals.garbageCollect(this.bodies);
                 }
-                newBodies.forEach(b => this.addBody(b));
+                
+                // Add new fragments
+                for (const nb of newBodies) {
+                    this.addBody(nb);
+                }
             }
 
-            fracture(A, B, energy, list) {
-                // Simplified fracture for demo
+            fractureBodies(A, B, energy, newBodiesList) {
+                // Combine A and B momentarily to calculate conservation
                 const totalMass = A.mass + B.mass;
-                const center = A.pos.clone().multiplyScalar(A.mass).add(B.pos.clone().multiplyScalar(B.mass)).multiplyScalar(1/totalMass);
-                const baseVel = A.vel.clone().multiplyScalar(A.mass).add(B.vel.clone().multiplyScalar(B.mass)).multiplyScalar(1/totalMass);
+                const centerOfMass = A.pos.clone().multiplyScalar(A.mass).add(B.pos.clone().multiplyScalar(B.mass)).multiplyScalar(1/totalMass);
+                const totalMomentum = A.vel.clone().multiplyScalar(A.mass).add(B.vel.clone().multiplyScalar(B.mass));
+                const baseVel = totalMomentum.multiplyScalar(1/totalMass);
+
+                // Determine fragment count based on energy
+                const severity = Math.min(energy / CONFIG.fractureThreshold, 5.0); 
+                const numFragments = Math.floor(3 + Math.random() * 3 * severity);
+
+                let remainingMass = totalMass;
                 
-                const count = Math.min(10, Math.floor(3 + energy / 20));
-                let mRem = totalMass;
-
-                for(let k=0; k<count; k++) {
-                    const mFrag = k === count-1 ? mRem : mRem * (0.2 + Math.random()*0.3);
-                    if (mFrag < 0.1) continue;
-                    mRem -= mFrag;
-
-                    const dir = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize();
-                    const speed = Math.sqrt(energy/totalMass) * (0.5 + Math.random());
+                for (let k = 0; k < numFragments; k++) {
+                    if (remainingMass < CONFIG.minFragmentMass) break;
                     
-                    const frag = new Body(mFrag, center.clone().add(dir.multiplyScalar(A.radius)), baseVel.clone().add(dir.multiplyScalar(speed)), 'rock', Math.max(A.temperature, B.temperature)+200);
+                    // Power law mass distribution (approximate)
+                    let fragMass = remainingMass * (0.3 + Math.random() * 0.4);
+                    if (k === numFragments - 1) fragMass = remainingMass; // Last one takes all
+                    
+                    if (fragMass < CONFIG.minFragmentMass) continue;
+
+                    remainingMass -= fragMass;
+
+                    // Position: Scatter around CoM
+                    const scatterDir = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize();
+                    const offset = scatterDir.clone().multiplyScalar((A.radius + B.radius) * 0.5 * Math.random());
+                    const fragPos = centerOfMass.clone().add(offset);
+
+                    // Velocity: Base Velocity + Explosion Ejection
+                    const ejectSpeed = Math.sqrt(energy / totalMass) * (0.5 + Math.random());
+                    const fragVel = baseVel.clone().add(scatterDir.multiplyScalar(ejectSpeed));
+
+                    // Temp: Fragments are hot
+                    const fragTemp = Math.max(A.temperature, B.temperature) + (energy / totalMass) * 0.1;
+
+                    // Create Fragment
+                    const type = A.mass > B.mass ? A.type : B.type;
+                    const frag = new Body(fragMass, fragPos, fragVel, type, fragTemp);
                     frag.isFragment = true;
-                    list.push(frag);
+                    
+                    newBodiesList.push(frag);
+                    
+                    // Spawn visual debris particles
+                    visuals.spawnExplosion(fragPos, fragTemp);
                 }
             }
         }
 
         // ==========================================
-        // 3. VISUALS (Particles & Trails)
+        // 3. VISUALS & RENDERING
         // ==========================================
-        class ParticleSystem {
-            constructor(scene) {
-                this.limit = CONFIG.particleLimit;
-                this.positions = new Float32Array(this.limit * 3);
-                this.colors = new Float32Array(this.limit * 3);
-                this.sizes = new Float32Array(this.limit);
-                this.data = []; // { life, maxLife, vel }
-
-                const geo = new THREE.BufferGeometry();
-                geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-                geo.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
-                geo.setAttribute('size', new THREE.BufferAttribute(this.sizes, 1));
-
-                // Shader Material for Fire/Smoke
-                const mat = new THREE.ShaderMaterial({
-                    uniforms: {
-                        pointTexture: { value: new THREE.TextureLoader().load( 'https://threejs.org/examples/textures/sprites/spark1.png' ) }
-                    },
-                    vertexShader: `
-                        attribute float size;
-                        varying vec3 vColor;
-                        void main() {
-                            vColor = color;
-                            vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
-                            gl_PointSize = size * ( 300.0 / -mvPosition.z );
-                            gl_Position = projectionMatrix * mvPosition;
-                        }
-                    `,
-                    fragmentShader: `
-                        uniform sampler2D pointTexture;
-                        varying vec3 vColor;
-                        void main() {
-                            gl_FragColor = vec4( vColor, 1.0 ) * texture2D( pointTexture, gl_PointCoord );
-                        }
-                    `,
-                    blending: THREE.AdditiveBlending,
-                    depthWrite: false,
-                    transparent: true
-                });
-
-                this.mesh = new THREE.Points(geo, mat);
-                this.mesh.frustumCulled = false;
-                scene.add(this.mesh);
-            }
-
-            emit(pos, vel, color, size, life) {
-                if (this.data.length >= this.limit) return;
-                
-                const idx = this.data.length;
-                this.positions[idx*3] = pos.x;
-                this.positions[idx*3+1] = pos.y;
-                this.positions[idx*3+2] = pos.z;
-                
-                this.colors[idx*3] = color.r;
-                this.colors[idx*3+1] = color.g;
-                this.colors[idx*3+2] = color.b;
-                
-                this.sizes[idx] = size;
-                
-                this.data.push({ 
-                    life: life, 
-                    maxLife: life, 
-                    vel: vel.clone().add(new THREE.Vector3((Math.random()-0.5)*2, (Math.random()-0.5)*2, (Math.random()-0.5)*2)) 
-                });
-            }
-
-            update(dt) {
-                let count = 0;
-                for (let i = 0; i < this.data.length; i++) {
-                    const p = this.data[i];
-                    p.life -= dt;
-
-                    if (p.life > 0) {
-                        // Move
-                        this.positions[count*3] += p.vel.x * dt;
-                        this.positions[count*3+1] += p.vel.y * dt;
-                        this.positions[count*3+2] += p.vel.z * dt;
-
-                        // Color fade (Fire -> Smoke)
-                        const ratio = p.life / p.maxLife;
-                        // Simple color shift handled by initial emission color mostly, 
-                        // but let's dim it
-                        this.sizes[count] *= 0.98; // Shrink slightly
-
-                        // Shift data if needed to keep array compact
-                        if (count !== i) {
-                            this.positions[count*3] = this.positions[i*3];
-                            this.positions[count*3+1] = this.positions[i*3+1];
-                            this.positions[count*3+2] = this.positions[i*3+2];
-                            this.colors[count*3] = this.colors[i*3] * ratio; // Fade out
-                            this.colors[count*3+1] = this.colors[i*3+1] * ratio;
-                            this.colors[count*3+2] = this.colors[i*3+2] * ratio;
-                            this.sizes[count] = this.sizes[i];
-                            this.data[count] = p;
-                        }
-                        count++;
-                    }
-                }
-                
-                this.data.length = count;
-                this.mesh.geometry.setDrawRange(0, count);
-                this.mesh.geometry.attributes.position.needsUpdate = true;
-                this.mesh.geometry.attributes.color.needsUpdate = true;
-                this.mesh.geometry.attributes.size.needsUpdate = true;
-            }
-        }
 
         class VisualSystem {
-            constructor(scene) {
+            constructor(scene, camera) {
                 this.scene = scene;
-                this.meshMap = new Map();
-                this.trailMap = new Map();
-                this.particles = new ParticleSystem(scene);
+                this.camera = camera;
+                this.meshMap = new Map(); // Body ID -> Mesh
+                this.trailMap = new Map(); // Body ID -> Line
                 
-                this.geo = new THREE.IcosahedronGeometry(1, 1);
+                // Geometry & Materials Cache
+                this.geoLow = new THREE.IcosahedronGeometry(1, 0); // Low poly
+                this.geoHigh = new THREE.IcosahedronGeometry(1, 1); // Med poly
+                
+                // Particle System (Simple CPU Implementation for explosions)
+                this.particles = [];
+                const pGeo = new THREE.BufferGeometry();
+                const pMat = new THREE.PointsMaterial({ 
+                    color: 0xffaa00, size: 0.5, 
+                    blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8 
+                });
+                this.particleSystem = new THREE.Points(pGeo, pMat);
+                this.particleSystem.frustumCulled = false;
+                scene.add(this.particleSystem);
+                this.maxParticles = 2000;
+                this.pPositions = new Float32Array(this.maxParticles * 3);
+                this.pSizes = new Float32Array(this.maxParticles);
+                pGeo.setAttribute('position', new THREE.BufferAttribute(this.pPositions, 3));
             }
 
             update(bodies, dt) {
-                const activeIds = new Set();
+                // 1. Sync Bodies to Meshes
+                const currentIds = new Set();
                 
                 bodies.forEach(body => {
-                    activeIds.add(body.id);
-                    let entry = this.meshMap.get(body.id);
+                    currentIds.add(body.id);
+                    let mesh = this.meshMap.get(body.id);
 
-                    if (!entry) {
-                        // Create Mesh
+                    // Create mesh if new
+                    if (!mesh) {
+                        const matProps = body.matProps;
                         const mat = new THREE.MeshStandardMaterial({
-                            color: body.color, roughness: 0.6, metalness: 0.2,
-                            emissive: 0x000000
+                            color: matProps.color,
+                            roughness: matProps.roughness,
+                            emissive: 0x000000,
+                            flatShading: true
                         });
-                        const mesh = new THREE.Mesh(this.geo, mat);
+                        
+                        // Use LOD based on mass
+                        const geo = body.mass > 5 ? this.geoHigh : this.geoLow;
+                        mesh = new THREE.Mesh(geo, mat);
                         this.scene.add(mesh);
-                        
-                        // Create Advanced Trail (BufferGeometry with Vertex Colors)
-                        const tLen = CONFIG.trailLength;
-                        const tGeo = new THREE.BufferGeometry();
-                        const tPos = new Float32Array(tLen * 3);
-                        const tCol = new Float32Array(tLen * 3); // For gradients
-                        
-                        // Init trail at spawn pos
-                        for(let i=0; i<tLen*3; i+=3) {
-                            tPos[i]=body.pos.x; tPos[i+1]=body.pos.y; tPos[i+2]=body.pos.z;
-                        }
+                        this.meshMap.set(body.id, mesh);
 
-                        tGeo.setAttribute('position', new THREE.BufferAttribute(tPos, 3));
-                        tGeo.setAttribute('color', new THREE.BufferAttribute(tCol, 3));
-
-                        const tMat = new THREE.LineBasicMaterial({
-                            vertexColors: true,
-                            transparent: true, opacity: 0.6,
-                            blending: THREE.AdditiveBlending
+                        // Trail
+                        const trailGeo = new THREE.BufferGeometry();
+                        const positions = new Float32Array(CONFIG.trailLength * 3).fill(body.pos.x);
+                        trailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                        const trailMat = new THREE.LineBasicMaterial({ 
+                            color: matProps.color, 
+                            transparent: true, opacity: 0.3,
+                            blending: THREE.AdditiveBlending 
                         });
-                        const trail = new THREE.Line(tGeo, tMat);
-                        trail.frustumCulled = false;
+                        const trail = new THREE.Line(trailGeo, trailMat);
+                        trail.frustumCulled = false; // Optimization trade-off
                         this.scene.add(trail);
-
-                        entry = { mesh, trail, tPos, tCol, idx: 0 };
-                        this.meshMap.set(body.id, entry);
+                        this.trailMap.set(body.id, { mesh: trail, positions: positions, idx: 0 });
                     }
 
-                    // 1. Update Mesh Transform
-                    entry.mesh.position.copy(body.pos);
-                    entry.mesh.scale.setScalar(body.radius);
-                    entry.mesh.rotation.x += dt;
-                    
-                    // 2. Thermal Visuals (Glow & Meteor Tail)
-                    const tempRatio = Math.min(body.temperature / 2000, 1.0);
+                    // Update Position & Scale
+                    mesh.position.copy(body.pos);
+                    mesh.scale.setScalar(body.radius);
+                    mesh.rotation.x += body.vel.z * 0.1 * dt; // Fake spin
+                    mesh.rotation.y += body.vel.x * 0.1 * dt;
+
+                    // Update Thermal Color (Emissive)
                     if (body.temperature > 50) {
-                        entry.mesh.material.emissive.setHSL(0.05, 1.0, 0.5 * tempRatio);
-                        entry.mesh.material.emissiveIntensity = tempRatio * 3.0;
+                        const intensity = Math.min(body.temperature / 1000, 1.0);
+                        const r = 1.0;
+                        const g = Math.max(0, 1.0 - intensity * 0.5); // Becomes yellower/whiter
+                        const b = Math.max(0, 1.0 - intensity);
+                        mesh.material.emissive.setRGB(r, g, b);
+                        mesh.material.emissiveIntensity = intensity * CONFIG.heatToGlow;
                     } else {
-                        entry.mesh.material.emissive.setHex(0x000000);
+                        mesh.material.emissive.setHex(0x000000);
                     }
 
-                    // Meteor Effect: Emit particles if hot and moving
-                    if (body.temperature > CONFIG.heatThreshold) {
-                        const speed = body.vel.length();
-                        const emitCount = Math.floor(speed * tempRatio * 0.5); // More speed/heat = more particles
-                        
-                        for(let k=0; k<emitCount; k++) {
-                            // Emit behind the body
-                            const backDir = body.vel.clone().normalize().negate();
-                            const offset = backDir.clone().add(new THREE.Vector3((Math.random()-0.5), (Math.random()-0.5), (Math.random()-0.5)).multiplyScalar(0.5));
-                            const spawnPos = body.pos.clone().add(offset.multiplyScalar(body.radius));
-                            
-                            // Fire Color (Orange/Yellow) to Smoke (Gray)
-                            const pColor = new THREE.Color().setHSL(0.05 + Math.random()*0.1, 1.0, 0.5 + Math.random()*0.5);
-                            this.particles.emit(spawnPos, body.vel.clone().multiplyScalar(0.2), pColor, body.radius * (2 + Math.random()*2), 1.0 + Math.random());
-                        }
-                    }
-
-                    // 3. Update Trail
-                    // Cyclic buffer for positions
-                    const headIdx = entry.idx;
-                    entry.tPos[headIdx*3] = body.pos.x;
-                    entry.tPos[headIdx*3+1] = body.pos.y;
-                    entry.tPos[headIdx*3+2] = body.pos.z;
-                    
-                    // Update Colors for Gradient (Fade out at tail)
-                    const tLen = CONFIG.trailLength;
-                    for (let k = 0; k < tLen; k++) {
-                        const curr = (headIdx - k + tLen) % tLen;
-                        const opacity = Math.max(0, 1.0 - k / tLen); // 1.0 at head, 0.0 at tail
-                        
-                        // Color based on velocity (Blue=Slow, Red=Fast)
-                        const speed = body.vel.length();
-                        const hue = Math.max(0.0, 0.6 - speed * 0.02); // Blue(0.6) to Red(0.0)
-                        const col = new THREE.Color().setHSL(hue, 1.0, 0.5);
-                        
-                        entry.tCol[curr*3] = col.r * opacity;
-                        entry.tCol[curr*3+1] = col.g * opacity;
-                        entry.tCol[curr*3+2] = col.b * opacity;
-                    }
-
-                    entry.idx = (headIdx + 1) % tLen;
-                    entry.trail.geometry.attributes.position.needsUpdate = true;
-                    entry.trail.geometry.attributes.color.needsUpdate = true;
+                    // Update Trail
+                    const trailData = this.trailMap.get(body.id);
+                    let idx = trailData.idx;
+                    const posArr = trailData.positions;
+                    posArr[idx * 3] = body.pos.x;
+                    posArr[idx * 3 + 1] = body.pos.y;
+                    posArr[idx * 3 + 2] = body.pos.z;
+                    trailData.mesh.geometry.attributes.position.needsUpdate = true;
+                    trailData.idx = (idx + 1) % CONFIG.trailLength;
                 });
 
-                this.particles.update(dt);
+                // 2. Update Particles
+                this.updateParticles(dt);
             }
 
             garbageCollect(activeBodies) {
                 const activeIds = new Set(activeBodies.map(b => b.id));
-                for (const [id, entry] of this.meshMap) {
+                for (const [id, mesh] of this.meshMap) {
                     if (!activeIds.has(id)) {
-                        this.scene.remove(entry.mesh);
-                        this.scene.remove(entry.trail);
-                        entry.mesh.geometry.dispose();
-                        entry.mesh.material.dispose();
-                        entry.trail.geometry.dispose();
-                        entry.trail.material.dispose();
+                        this.scene.remove(mesh);
+                        mesh.geometry.dispose();
+                        mesh.material.dispose();
                         this.meshMap.delete(id);
+
+                        const trail = this.trailMap.get(id);
+                        if (trail) {
+                            this.scene.remove(trail.mesh);
+                            trail.mesh.geometry.dispose();
+                            trail.mesh.material.dispose();
+                            this.trailMap.delete(id);
+                        }
                     }
                 }
             }
 
             triggerFlash(pos, energy) {
-                const light = new THREE.PointLight(0xffaa00, 2, 80);
+                const light = new THREE.PointLight(0xffaa00, 1, 50);
                 light.position.copy(pos);
+                light.intensity = Math.min(energy * 0.1, 10);
                 this.scene.add(light);
-                setTimeout(() => this.scene.remove(light), 100);
+                
+                // Animate cleanup
+                const fade = () => {
+                    light.intensity *= 0.8;
+                    if (light.intensity < 0.1) {
+                        this.scene.remove(light);
+                        light.dispose();
+                    } else {
+                        requestAnimationFrame(fade);
+                    }
+                };
+                fade();
+            }
+
+            spawnExplosion(pos, temp) {
+                const count = 10;
+                for(let i=0; i<count; i++) {
+                    if (this.particles.length >= this.maxParticles) this.particles.shift(); // Recycle
+                    this.particles.push({
+                        pos: pos.clone().add(new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5)),
+                        vel: new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).multiplyScalar(5),
+                        life: 1.0,
+                        decay: 0.01 + Math.random() * 0.03
+                    });
+                }
+            }
+
+            updateParticles(dt) {
+                let pCount = 0;
+                const positions = this.particleSystem.geometry.attributes.position.array;
+
+                for (let i = this.particles.length - 1; i >= 0; i--) {
+                    const p = this.particles[i];
+                    p.life -= p.decay;
+                    p.pos.addScaledVector(p.vel, dt);
+                    
+                    if (p.life <= 0) {
+                        this.particles.splice(i, 1);
+                        continue;
+                    }
+
+                    positions[pCount*3] = p.pos.x;
+                    positions[pCount*3+1] = p.pos.y;
+                    positions[pCount*3+2] = p.pos.z;
+                    pCount++;
+                }
+                
+                this.particleSystem.geometry.setDrawRange(0, pCount);
+                this.particleSystem.geometry.attributes.position.needsUpdate = true;
             }
         }
 
         // ==========================================
-        // 4. MAIN SETUP
+        // 4. MAIN INIT & LOOP
         // ==========================================
+
         const scene = new THREE.Scene();
-        // Starfield
-        const stars = new Array(2000).fill().map(() => new THREE.Vector3((Math.random()-0.5)*800, (Math.random()-0.5)*800, (Math.random()-0.5)*800));
-        const starGeo = new THREE.BufferGeometry().setFromPoints(stars);
-        const starMat = new THREE.PointsMaterial({color: 0x666666, size: 0.5});
-        scene.add(new THREE.Points(starGeo, starMat));
+        // Starfield Background
+        {
+            const starGeo = new THREE.BufferGeometry();
+            const starPos = [];
+            for(let i=0; i<2000; i++) {
+                starPos.push((Math.random()-0.5)*1000, (Math.random()-0.5)*1000, (Math.random()-0.5)*1000);
+            }
+            starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+            const starMat = new THREE.PointsMaterial({color: 0x555555, size: 0.7});
+            scene.add(new THREE.Points(starGeo, starMat));
+        }
 
-        const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 2000);
-        camera.position.set(0, 100, 150);
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+        camera.position.set(0, 80, 150);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: false });
+        const renderer = new THREE.WebGLRenderer({ antialias: false }); // Post-proc handles AA usually, or turn off for perf
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.toneMapping = THREE.ReinhardToneMapping;
         document.getElementById('canvas-container').appendChild(renderer.domElement);
@@ -513,69 +550,79 @@
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
 
-        // Bloom
+        // Post Processing (Bloom)
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloomPass.threshold = 0.2;
+        bloomPass.strength = 1.2;
+        bloomPass.radius = 0.5;
+        
         const composer = new EffectComposer(renderer);
-        composer.addPass(new RenderPass(scene, camera));
-        const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
-        bloom.threshold = 0.1; bloom.strength = 1.0; bloom.radius = 0.5;
-        composer.addPass(bloom);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
 
+        // Systems
         const physics = new PhysicsSystem();
-        const visuals = new VisualSystem(scene);
-        const light = new THREE.PointLight(0xffffff, 1);
-        light.position.set(0, 50, 0);
-        scene.add(light); scene.add(new THREE.AmbientLight(0x202020));
+        const visuals = new VisualSystem(scene, camera);
 
-        // Initial Scene
-        physics.addBody(new Body(300, V3(0,0,0), V3(0,0,0), 'metal')); // Sun
-        for(let i=0; i<30; i++) {
-            const r = 40 + Math.random()*60;
-            const theta = Math.random()*Math.PI*2;
-            physics.addBody(new Body(Math.random()*5+1, V3(Math.cos(theta)*r, 0, Math.sin(theta)*r), V3(-Math.sin(theta)*2, 0, Math.cos(theta)*2)));
-        }
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x222222);
+        scene.add(ambientLight);
+        const sunLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        sunLight.position.set(50, 50, 50);
+        scene.add(sunLight);
 
-        // ==========================================
-        // 5. INPUT & MODES
-        // ==========================================
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-        let dragStart = null, dragLine = null;
-
-        function updateModeUI() {
-            const label = document.getElementById('modeLabel');
-            const text = document.getElementById('modeText');
-            if (CONFIG.spawnMode) {
-                label.innerText = "SPAWN MODE";
-                label.style.color = "#ff4444";
-                text.innerText = "Spawn (Drag to Shoot)";
-                controls.enabled = false;
-                document.body.style.cursor = "crosshair";
-            } else {
-                label.innerText = "VIEW MODE";
-                label.style.color = "white";
-                text.innerText = "View (Orbit)";
-                controls.enabled = true;
-                document.body.style.cursor = "default";
+        // Initial Scenario: Solar System-ish
+        function resetScenario(type) {
+            physics.bodies = [];
+            visuals.garbageCollect([]); // Clear all
+            
+            if (type === 'galaxy') {
+                // Central Black Hole-ish
+                physics.addBody(new Body(500, V3(0,0,0), V3(0,0,0), 'metal', 1000));
+                
+                // Orbiters
+                for(let i=0; i<150; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 30 + Math.random() * 60;
+                    const velocity = Math.sqrt(CONFIG.G * 500 / dist);
+                    const pos = V3(Math.cos(angle)*dist, (Math.random()-0.5)*2, Math.sin(angle)*dist);
+                    const vel = V3(-Math.sin(angle)*velocity, 0, Math.cos(angle)*velocity);
+                    physics.addBody(new Body(Math.random() * 2 + 0.5, pos, vel, 'rock'));
+                }
+            } else if (type === 'collision') {
+                physics.addBody(new Body(100, V3(-40, 0, 0), V3(1, 0, 0), 'rock'));
+                physics.addBody(new Body(100, V3(40, 0, 10), V3(-1, 0, 0), 'ice')); // Slight offset for spin
             }
         }
+        
+        resetScenario('galaxy');
 
-        // Drag Logic
+        // Input Handling
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let dragStart = null;
+        let dragLine = null;
+
         window.addEventListener('mousedown', (e) => {
-            if (!CONFIG.spawnMode || e.button !== 0 || e.target.closest('.lil-gui')) return;
-            
-            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-            raycaster.setFromCamera(mouse, camera);
-            
-            const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
-            const target = new THREE.Vector3();
-            raycaster.ray.intersectPlane(plane, target);
-            
-            if (target) {
-                dragStart = target;
-                const geo = new THREE.BufferGeometry().setFromPoints([target, target]);
-                dragLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ff00 }));
-                scene.add(dragLine);
+            if (e.button === 0 && !e.target.closest('.lil-gui')) { // Left click
+                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                
+                // Project to y=0 plane
+                raycaster.setFromCamera(mouse, camera);
+                const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+                const target = new THREE.Vector3();
+                raycaster.ray.intersectPlane(plane, target);
+                
+                if (target) {
+                    dragStart = target;
+                    // Draw helper line
+                    const points = [dragStart, dragStart];
+                    const geo = new THREE.BufferGeometry().setFromPoints(points);
+                    dragLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ff00 }));
+                    scene.add(dragLine);
+                }
             }
         });
 
@@ -584,13 +631,15 @@
                 mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                 mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
                 raycaster.setFromCamera(mouse, camera);
-                const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+                const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
                 const target = new THREE.Vector3();
                 raycaster.ray.intersectPlane(plane, target);
-
+                
                 if (target && dragLine) {
-                    const pos = dragLine.geometry.attributes.position.array;
-                    pos[3] = target.x; pos[4] = target.y; pos[5] = target.z;
+                    const positions = dragLine.geometry.attributes.position.array;
+                    positions[3] = target.x;
+                    positions[4] = target.y;
+                    positions[5] = target.z;
                     dragLine.geometry.attributes.position.needsUpdate = true;
                 }
             }
@@ -601,48 +650,69 @@
                 mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                 mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
                 raycaster.setFromCamera(mouse, camera);
-                const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+                const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
                 const target = new THREE.Vector3();
                 raycaster.ray.intersectPlane(plane, target);
                 
                 if (target) {
-                    const vel = target.clone().sub(dragStart).multiplyScalar(-0.5);
-                    const b = new Body(CONFIG.spawnMass, dragStart, vel, 'rock');
-                    physics.addBody(b);
+                    const vel = target.clone().sub(dragStart).multiplyScalar(-0.5); // Drag backwards to shoot
+                    physics.addBody(new Body(10, dragStart, vel, 'rock'));
                 }
-                scene.remove(dragLine);
-                dragStart = null; dragLine = null;
+                
+                if (dragLine) {
+                    scene.remove(dragLine);
+                    dragLine = null;
+                }
+                dragStart = null;
             }
         });
 
-        // GUI
+        // UI
         const gui = new GUI();
-        gui.add(CONFIG, 'spawnMode').name('ADD MODE').onChange(updateModeUI);
+        const folderPhys = gui.addFolder('Physics');
+        folderPhys.add(CONFIG, 'G', 0.1, 5.0).name('Gravity G');
+        folderPhys.add(CONFIG, 'dt', 0.001, 0.05).name('Time Step');
+        folderPhys.add(CONFIG, 'fractureThreshold', 1, 50).name('Break Strength');
         
-        const folderSpawn = gui.addFolder('Spawn Settings');
-        folderSpawn.add(CONFIG, 'spawnMass', 1, 100).name('Mass');
-        folderSpawn.add(CONFIG, 'G', 0.1, 5.0).name('Gravity');
-
         const folderVis = gui.addFolder('Visuals');
-        folderVis.add(CONFIG, 'trailLength', 10, 300).name('Trail Length');
-        folderVis.add(bloom, 'strength', 0, 3).name('Glow');
+        folderVis.add(bloomPass, 'strength', 0, 3).name('Bloom Str');
+        folderVis.add(bloomPass, 'threshold', 0, 1).name('Bloom Thresh');
         
-        updateModeUI();
+        const folderScen = gui.addFolder('Scenarios');
+        const scenarios = {
+            'Galaxy Disk': () => resetScenario('galaxy'),
+            'Head-on Collision': () => resetScenario('collision')
+        };
+        folderScen.add(scenarios, 'Galaxy Disk');
+        folderScen.add(scenarios, 'Head-on Collision');
 
         // Loop
         function animate() {
             requestAnimationFrame(animate);
-            if (!CONFIG.spawnMode) controls.update();
             
-            for(let k=0; k<CONFIG.subSteps; k++) physics.integrate(CONFIG.dt/CONFIG.subSteps);
+            controls.update();
+            
+            // Physics Steps
+            for(let i=0; i<CONFIG.subSteps; i++) {
+                physics.integrate(CONFIG.dt / CONFIG.subSteps);
+            }
+            
             visuals.update(physics.bodies, CONFIG.dt);
             
+            // Stats
+            // document.title = `Bodies: ${physics.bodies.length}`;
+
             composer.render();
         }
+
+        // Resize Handler
         window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight);
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
         });
+
         animate();
     </script>
 </body>
