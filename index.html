@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>N-Body Fire & Fracture Sim</title>
+    <title>N-Body Fire & Fracture Sim (Ribbon Trails)</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #050508; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -47,8 +47,8 @@
             softening: 0.5,        
             dt: 0.016,             
             subSteps: 2,           
-            maxBodies: 400,        
-            trailLength: 60,       
+            maxBodies: 600,        // [Fix] 개수 제한을 늘림
+            trailLength: 30,       // [Visual] 리본 꼬리 길이 (너무 길면 성능 저하)
             
             // Fracture Props
             fractureThreshold: 15, 
@@ -88,8 +88,8 @@
                 
                 this.temperature = temp;
                 
-                this.mesh = null;
-                this.trailIdx = 0;
+                // For Trail History
+                this.history = [];
             }
 
             updateThermal() {
@@ -104,11 +104,12 @@
             }
 
             addBody(body) {
-                if (this.bodies.length < CONFIG.maxBodies) {
-                    this.bodies.push(body);
-                    return body;
+                // [Fix] 개수가 꽉 차면 가장 오래된 행성을 제거하고 새 행성을 추가
+                if (this.bodies.length >= CONFIG.maxBodies) {
+                    this.bodies.shift(); 
                 }
-                return null;
+                this.bodies.push(body);
+                return body;
             }
 
             integrate(dt) {
@@ -278,7 +279,7 @@
                 this.scene = scene;
                 this.camera = camera;
                 this.meshMap = new Map();
-                this.trailMap = new Map();
+                this.trailMap = new Map(); // Stores Ribbon data
                 
                 this.geoLow = new THREE.IcosahedronGeometry(1, 0);
                 this.geoHigh = new THREE.IcosahedronGeometry(1, 1);
@@ -298,9 +299,14 @@
                 this.particleSystem.frustumCulled = false;
                 scene.add(this.particleSystem);
                 
-                this.maxParticles = 5000; // Increased for tails
+                this.maxParticles = 5000;
                 this.pPositions = new Float32Array(this.maxParticles * 3);
                 pGeo.setAttribute('position', new THREE.BufferAttribute(this.pPositions, 3));
+
+                // Reusable vectors for Ribbon Math
+                this.vecToCam = new THREE.Vector3();
+                this.vecDir = new THREE.Vector3();
+                this.vecPerp = new THREE.Vector3();
             }
 
             update(bodies, dt) {
@@ -310,6 +316,7 @@
                     currentIds.add(body.id);
                     let mesh = this.meshMap.get(body.id);
 
+                    // 1. Create Body Mesh
                     if (!mesh) {
                         const matProps = body.matProps;
                         const mat = new THREE.MeshStandardMaterial({
@@ -324,33 +331,54 @@
                         this.scene.add(mesh);
                         this.meshMap.set(body.id, mesh);
 
-                        // Trail Line
+                        // [Visual Fix] Ribbon Trail Creation (V-shape)
+                        const trailLen = CONFIG.trailLength;
                         const trailGeo = new THREE.BufferGeometry();
-                        const positions = new Float32Array(CONFIG.trailLength * 3).fill(body.pos.x);
+                        
+                        // 2 vertices per step for a ribbon strip
+                        const positions = new Float32Array(trailLen * 2 * 3); 
+                        // Create Indices for Triangle Strip
+                        const indices = [];
+                        for (let i = 0; i < trailLen - 1; i++) {
+                            const v = i * 2;
+                            indices.push(v, v+1, v+2);
+                            indices.push(v+1, v+3, v+2);
+                        }
+                        
+                        trailGeo.setIndex(indices);
                         trailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                        const trailMat = new THREE.LineBasicMaterial({ 
+                        
+                        const trailMat = new THREE.MeshBasicMaterial({ 
                             color: matProps.color, 
-                            transparent: true, opacity: 0.2,
-                            blending: THREE.AdditiveBlending 
+                            transparent: true, 
+                            opacity: 0.3,
+                            blending: THREE.AdditiveBlending,
+                            side: THREE.DoubleSide,
+                            depthWrite: false
                         });
-                        const trail = new THREE.Line(trailGeo, trailMat);
-                        trail.frustumCulled = false;
-                        this.scene.add(trail);
-                        this.trailMap.set(body.id, { mesh: trail, positions: positions, idx: 0 });
+                        
+                        const trailMesh = new THREE.Mesh(trailGeo, trailMat);
+                        trailMesh.frustumCulled = false;
+                        this.scene.add(trailMesh);
+                        
+                        // Initialize history with current position
+                        for(let k=0; k<trailLen; k++) body.history.push(body.pos.clone());
+
+                        this.trailMap.set(body.id, { mesh: trailMesh, positions: positions });
                     }
 
+                    // 2. Update Body Transformation
                     mesh.position.copy(body.pos);
                     mesh.scale.setScalar(body.radius);
                     mesh.rotation.x += body.vel.z * 0.1 * dt;
                     mesh.rotation.y += body.vel.x * 0.1 * dt;
 
-                    // Thermal Glow & Fire Tail
+                    // 3. Thermal Glow & Fire Particles
                     if (body.temperature > 50) {
                         const intensity = Math.min(body.temperature / 1000, 1.0);
                         mesh.material.emissive.setRGB(1.0, Math.max(0, 1.0 - intensity * 0.5), Math.max(0, 1.0 - intensity));
                         mesh.material.emissiveIntensity = intensity * CONFIG.heatToGlow;
 
-                        // Spawn Fire Tail Particle
                         const spawnChance = Math.min(0.1 + (body.temperature - 50) * 0.002, 1.0);
                         if (Math.random() < spawnChance) {
                             this.spawnTrail(body);
@@ -359,15 +387,50 @@
                         mesh.material.emissive.setHex(0x000000);
                     }
 
-                    // Update Line Trail
+                    // 4. Update Ribbon Trail (V-Shape Logic)
                     const trailData = this.trailMap.get(body.id);
-                    let idx = trailData.idx;
-                    const posArr = trailData.positions;
-                    posArr[idx * 3] = body.pos.x;
-                    posArr[idx * 3 + 1] = body.pos.y;
-                    posArr[idx * 3 + 2] = body.pos.z;
-                    trailData.mesh.geometry.attributes.position.needsUpdate = true;
-                    trailData.idx = (idx + 1) % CONFIG.trailLength;
+                    // Update history buffer
+                    body.history.unshift(body.pos.clone());
+                    if (body.history.length > CONFIG.trailLength) body.history.pop();
+
+                    const posAttr = trailData.mesh.geometry.attributes.position;
+                    const posArr = posAttr.array;
+                    
+                    for (let i = 0; i < body.history.length; i++) {
+                        const p = body.history[i];
+                        
+                        // Calculate V-shape Width: 
+                        // Head (i=0) is full width, Tail (i=end) is 0 width
+                        const widthRatio = 1.0 - (i / (CONFIG.trailLength - 1));
+                        const currentWidth = body.radius * 0.8 * Math.max(0, widthRatio);
+
+                        // Calculate Ribbon Orientation (Billboarding)
+                        // Vector from point to camera
+                        this.vecToCam.subVectors(this.camera.position, p);
+                        
+                        // Direction of trail (curr - prev)
+                        if (i < body.history.length - 1) {
+                            this.vecDir.subVectors(body.history[i], body.history[i+1]);
+                        } else {
+                            // last point uses previous dir
+                            this.vecDir.subVectors(body.history[i-1], body.history[i]);
+                        }
+                        
+                        // Cross product to get "Right" vector relative to camera view
+                        this.vecPerp.crossVectors(this.vecToCam, this.vecDir).normalize().multiplyScalar(currentWidth);
+
+                        // Vertex 1 (Left)
+                        posArr[i*6 + 0] = p.x + this.vecPerp.x;
+                        posArr[i*6 + 1] = p.y + this.vecPerp.y;
+                        posArr[i*6 + 2] = p.z + this.vecPerp.z;
+
+                        // Vertex 2 (Right)
+                        posArr[i*6 + 3] = p.x - this.vecPerp.x;
+                        posArr[i*6 + 4] = p.y - this.vecPerp.y;
+                        posArr[i*6 + 5] = p.z - this.vecPerp.z;
+                    }
+                    
+                    posAttr.needsUpdate = true;
                 });
 
                 this.updateParticles(dt);
@@ -430,7 +493,6 @@
                 const offset = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).multiplyScalar(body.radius);
                 const spawnPos = body.pos.clone().add(offset);
                 
-                // Smoke stays behind (inherits little velocity)
                 const trailVel = body.vel.clone().multiplyScalar(0.1).add(
                     new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).multiplyScalar(0.5)
                 );
@@ -495,7 +557,6 @@
 
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
-        // MOUSE CONFIG: Left=None(Custom), Middle=Zoom, Right=Rotate
         controls.mouseButtons = {
             LEFT: null,
             MIDDLE: THREE.MOUSE.DOLLY,
@@ -551,7 +612,7 @@
 
         window.addEventListener('mousedown', (e) => {
             if (e.button === 0 && !e.target.closest('.lil-gui')) { 
-                controls.enabled = false; // Disable camera to allow pure dragging
+                controls.enabled = false; 
 
                 mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                 mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
@@ -591,7 +652,7 @@
         });
 
         window.addEventListener('mouseup', (e) => {
-            controls.enabled = true; // Re-enable camera
+            controls.enabled = true; 
 
             if (dragStart) {
                 mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
