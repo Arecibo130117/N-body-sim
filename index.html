@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>N-Body Sim: Optimized</title>
+    <title>N-Body Sim: Long V-Trails</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #050508; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -25,7 +25,7 @@
 <body>
     <div id="canvas-container"></div>
     <div id="instructions">
-        <h2>N-Body Fracture & Fire Sim (Optimized)</h2>
+        <h2>N-Body Fracture & Fire Sim</h2>
         <p>Left Click + Drag: <b>Spawn Body</b></p>
         <p>Right Click: <b>Rotate Camera</b></p>
         <p>Wheel: <b>Zoom</b></p>
@@ -47,8 +47,8 @@
             softening: 0.5,        
             dt: 0.016,             
             subSteps: 2,           
-            maxBodies: 500,        
-            trailLength: 80,       // [Optimized] 성능과 시각적 효과의 타협점 (100 -> 80)
+            maxBodies: 500,        // [Balance] 궤적이 길어졌으므로 개수 제한을 약간 조절 (성능 유지)
+            trailLength: 100,      // [Updated] 궤적 길이를 30 -> 100으로 대폭 증가
             
             // Fracture Props
             fractureThreshold: 15, 
@@ -65,11 +65,7 @@
             }
         };
 
-        // Pre-allocate vectors to avoid GC overhead
-        const _v1 = new THREE.Vector3();
-        const _v2 = new THREE.Vector3();
-        const _v3 = new THREE.Vector3();
-        const _camPos = new THREE.Vector3();
+        const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 
         // ==========================================
         // 2. PHYSICS ENGINE
@@ -92,28 +88,8 @@
                 
                 this.temperature = temp;
                 
-                // Ring buffer for history to avoid array shifting overhead
-                this.historySize = CONFIG.trailLength;
-                this.historyX = new Float32Array(this.historySize);
-                this.historyY = new Float32Array(this.historySize);
-                this.historyZ = new Float32Array(this.historySize);
-                this.headIdx = 0;
-                this.historyCount = 0;
-            }
-
-            pushHistory() {
-                this.headIdx = (this.headIdx + 1) % this.historySize;
-                this.historyX[this.headIdx] = this.pos.x;
-                this.historyY[this.headIdx] = this.pos.y;
-                this.historyZ[this.headIdx] = this.pos.z;
-                if (this.historyCount < this.historySize) this.historyCount++;
-            }
-
-            getHistoryPos(offset, targetVec) {
-                // offset 0 is current head, 1 is previous...
-                let idx = this.headIdx - offset;
-                if (idx < 0) idx += this.historySize;
-                targetVec.set(this.historyX[idx], this.historyY[idx], this.historyZ[idx]);
+                // For Trail History
+                this.history = [];
             }
 
             updateThermal() {
@@ -128,9 +104,9 @@
             }
 
             addBody(body) {
+                // FIFO: 개수가 꽉 차면 가장 오래된 행성을 제거
                 if (this.bodies.length >= CONFIG.maxBodies) {
-                    const removed = this.bodies.shift();
-                    // Mark for cleanup in visual system if needed
+                    this.bodies.shift(); 
                 }
                 this.bodies.push(body);
                 return body;
@@ -139,67 +115,45 @@
             integrate(dt) {
                 const halfDt = 0.5 * dt;
 
-                // 1. First half-step velocity update
-                for (let i = 0; i < this.bodies.length; i++) {
-                    const b = this.bodies[i];
-                    b.vel.x += b.acc.x * halfDt;
-                    b.vel.y += b.acc.y * halfDt;
-                    b.vel.z += b.acc.z * halfDt;
-                    
-                    b.pos.x += b.vel.x * dt;
-                    b.pos.y += b.vel.y * dt;
-                    b.pos.z += b.vel.z * dt;
+                for (const b of this.bodies) {
+                    b.vel.addScaledVector(b.acc, halfDt);
+                    b.pos.addScaledVector(b.vel, dt);
                 }
 
                 this.computeGravity();
                 this.resolveCollisions(dt);
 
-                // 2. Second half-step velocity update & Thermal
-                for (let i = 0; i < this.bodies.length; i++) {
-                    const b = this.bodies[i];
-                    b.vel.x += b.acc.x * halfDt;
-                    b.vel.y += b.acc.y * halfDt;
-                    b.vel.z += b.acc.z * halfDt;
-                    
+                for (const b of this.bodies) {
+                    b.vel.addScaledVector(b.acc, halfDt);
                     b.updateThermal();
                 }
             }
 
             computeGravity() {
                 const N = this.bodies.length;
-                // Reset accelerations
-                for (let i = 0; i < N; i++) {
-                    const b = this.bodies[i];
-                    b.acc.x = 0; b.acc.y = 0; b.acc.z = 0;
-                }
+                for (let i = 0; i < N; i++) this.bodies[i].acc.set(0, 0, 0);
 
                 const G = CONFIG.G;
                 const epsSq = CONFIG.softening * CONFIG.softening;
+                const vec = new THREE.Vector3();
 
-                // N^2 Gravity Loop (Optimized Math)
                 for (let i = 0; i < N; i++) {
-                    const A = this.bodies[i];
                     for (let j = i + 1; j < N; j++) {
+                        const A = this.bodies[i];
                         const B = this.bodies[j];
 
-                        const dx = B.pos.x - A.pos.x;
-                        const dy = B.pos.y - A.pos.y;
-                        const dz = B.pos.z - A.pos.z;
+                        vec.subVectors(B.pos, A.pos);
+                        const distSq = vec.lengthSq();
                         
-                        const distSq = dx*dx + dy*dy + dz*dz;
                         const f = G / Math.pow(distSq + epsSq, 1.5);
                         
-                        const fx = f * dx;
-                        const fy = f * dy;
-                        const fz = f * dz;
+                        A.acc.x += f * B.mass * vec.x;
+                        A.acc.y += f * B.mass * vec.y;
+                        A.acc.z += f * B.mass * vec.z;
 
-                        A.acc.x += fx * B.mass;
-                        A.acc.y += fy * B.mass;
-                        A.acc.z += fz * B.mass;
-
-                        B.acc.x -= fx * A.mass;
-                        B.acc.y -= fy * A.mass;
-                        B.acc.z -= fz * A.mass;
+                        B.acc.x -= f * A.mass * vec.x;
+                        B.acc.y -= f * A.mass * vec.y;
+                        B.acc.z -= f * A.mass * vec.z;
                     }
                 }
             }
@@ -208,6 +162,8 @@
                 const newBodies = [];
                 const removedIndices = new Set();
                 const N = this.bodies.length;
+                const vec = new THREE.Vector3();
+                const relVel = new THREE.Vector3();
 
                 for (let i = 0; i < N; i++) {
                     if (removedIndices.has(i)) continue;
@@ -217,31 +173,22 @@
                         const A = this.bodies[i];
                         const B = this.bodies[j];
                         
-                        const dx = B.pos.x - A.pos.x;
-                        const dy = B.pos.y - A.pos.y;
-                        const dz = B.pos.z - A.pos.z;
-                        const distSq = dx*dx + dy*dy + dz*dz;
+                        vec.subVectors(B.pos, A.pos);
+                        const distSq = vec.lengthSq();
                         const minDist = A.radius + B.radius;
 
                         if (distSq < minDist * minDist) {
                             const dist = Math.sqrt(distSq);
                             const overlap = minDist - dist;
-                            
-                            // Normal vector (A to B)
-                            const nx = dx / dist;
-                            const ny = dy / dist;
-                            const nz = dz / dist;
+                            const normal = vec.clone().normalize();
 
-                            // Relative Velocity
-                            const rvx = B.vel.x - A.vel.x;
-                            const rvy = B.vel.y - A.vel.y;
-                            const rvz = B.vel.z - A.vel.z;
-                            
-                            const velAlongNormal = rvx*nx + rvy*ny + rvz*nz;
+                            relVel.subVectors(B.vel, A.vel);
+                            const velAlongNormal = relVel.dot(normal);
 
                             if (velAlongNormal < 0) {
                                 const restitution = 0.5;
                                 const jImpulse = -(1 + restitution) * velAlongNormal / (A.invMass + B.invMass);
+                                const impulse = normal.clone().multiplyScalar(jImpulse);
                                 
                                 const mu = (A.mass * B.mass) / (A.mass + B.mass);
                                 const impactEnergy = 0.5 * mu * velAlongNormal * velAlongNormal;
@@ -253,63 +200,25 @@
                                 const Q = impactEnergy / (A.mass + B.mass);
                                 const isFracture = Q > CONFIG.fractureThreshold;
 
-                                // Position Correction
-                                const percent = 0.8;
-                                const slop = 0.01;
-                                const correctionMag = Math.max(overlap - slop, 0) / (A.invMass + B.invMass) * percent;
-                                const cx = nx * correctionMag;
-                                const cy = ny * correctionMag;
-                                const cz = nz * correctionMag;
-
-                                A.pos.x -= cx * A.invMass;
-                                A.pos.y -= cy * A.invMass;
-                                A.pos.z -= cz * A.invMass;
-                                B.pos.x += cx * B.invMass;
-                                B.pos.y += cy * B.invMass;
-                                B.pos.z += cz * B.invMass;
+                                const correction = normal.clone().multiplyScalar(overlap / (A.invMass + B.invMass) * 0.8);
+                                A.pos.sub(correction.clone().multiplyScalar(A.invMass));
+                                B.pos.add(correction.clone().multiplyScalar(B.invMass));
 
                                 if (isFracture && (A.mass > CONFIG.minFragmentMass || B.mass > CONFIG.minFragmentMass)) {
                                     this.fractureBodies(A, B, impactEnergy, newBodies);
                                     removedIndices.add(i);
                                     removedIndices.add(j);
-                                    visuals.triggerFlash(new THREE.Vector3((A.pos.x+B.pos.x)*0.5, (A.pos.y+B.pos.y)*0.5, (A.pos.z+B.pos.z)*0.5), impactEnergy);
+                                    visuals.triggerFlash(A.pos.clone().add(B.pos).multiplyScalar(0.5), impactEnergy);
                                 } else {
-                                    const ix = nx * jImpulse;
-                                    const iy = ny * jImpulse;
-                                    const iz = nz * jImpulse;
+                                    A.vel.sub(impulse.clone().multiplyScalar(A.invMass));
+                                    B.vel.add(impulse.clone().multiplyScalar(B.invMass));
                                     
-                                    A.vel.x -= ix * A.invMass;
-                                    A.vel.y -= iy * A.invMass;
-                                    A.vel.z -= iz * A.invMass;
-                                    B.vel.x += ix * B.invMass;
-                                    B.vel.y += iy * B.invMass;
-                                    B.vel.z += iz * B.invMass;
-
-                                    // Friction (Tangent)
-                                    // re-calc relVel
-                                    const rvx2 = B.vel.x - A.vel.x;
-                                    const rvy2 = B.vel.y - A.vel.y;
-                                    const rvz2 = B.vel.z - A.vel.z;
-                                    const vDotN = rvx2*nx + rvy2*ny + rvz2*nz;
+                                    const tangent = relVel.clone().sub(normal.clone().multiplyScalar(velAlongNormal)).normalize();
+                                    const jt = -relVel.dot(tangent) * 0.1 / (A.invMass + B.invMass);
+                                    const tangentImpulse = tangent.multiplyScalar(jt);
                                     
-                                    const tx = rvx2 - nx * vDotN;
-                                    const ty = rvy2 - ny * vDotN;
-                                    const tz = rvz2 - nz * vDotN;
-                                    const tLen = Math.sqrt(tx*tx + ty*ty + tz*tz);
-                                    
-                                    if(tLen > 0.001) {
-                                        const jt = -vDotN * 0.1 / (A.invMass + B.invMass);
-                                        const fX = (tx/tLen) * jt;
-                                        const fY = (ty/tLen) * jt;
-                                        const fZ = (tz/tLen) * jt;
-                                        
-                                        A.vel.x -= fX * A.invMass;
-                                        A.vel.y -= fY * A.invMass;
-                                        A.vel.z -= fZ * A.invMass;
-                                        B.vel.x += fX * B.invMass;
-                                        B.vel.y += fY * B.invMass;
-                                        B.vel.z += fZ * B.invMass;
-                                    }
+                                    A.vel.sub(tangentImpulse.clone().multiplyScalar(A.invMass));
+                                    B.vel.add(tangentImpulse.clone().multiplyScalar(B.invMass));
                                 }
                             }
                         }
@@ -328,17 +237,9 @@
 
             fractureBodies(A, B, energy, newBodiesList) {
                 const totalMass = A.mass + B.mass;
-                const cmX = (A.pos.x*A.mass + B.pos.x*B.mass) / totalMass;
-                const cmY = (A.pos.y*A.mass + B.pos.y*B.mass) / totalMass;
-                const cmZ = (A.pos.z*A.mass + B.pos.z*B.mass) / totalMass;
-                
-                const mvX = A.vel.x*A.mass + B.vel.x*B.mass;
-                const mvY = A.vel.y*A.mass + B.vel.y*B.mass;
-                const mvZ = A.vel.z*A.mass + B.vel.z*B.mass;
-
-                const baseVx = mvX / totalMass;
-                const baseVy = mvY / totalMass;
-                const baseVz = mvZ / totalMass;
+                const centerOfMass = A.pos.clone().multiplyScalar(A.mass).add(B.pos.clone().multiplyScalar(B.mass)).multiplyScalar(1/totalMass);
+                const totalMomentum = A.vel.clone().multiplyScalar(A.mass).add(B.vel.clone().multiplyScalar(B.mass));
+                const baseVel = totalMomentum.multiplyScalar(1/totalMass);
 
                 const severity = Math.min(energy / CONFIG.fractureThreshold, 5.0); 
                 const numFragments = Math.floor(3 + Math.random() * 3 * severity);
@@ -353,22 +254,14 @@
                     if (fragMass < CONFIG.minFragmentMass) continue;
                     remainingMass -= fragMass;
 
-                    // Random direction
-                    const theta = Math.random() * Math.PI * 2;
-                    const phi = Math.acos(2 * Math.random() - 1);
-                    const rx = Math.sin(phi) * Math.cos(theta);
-                    const ry = Math.sin(phi) * Math.sin(theta);
-                    const rz = Math.cos(phi);
-
-                    const rSum = (A.radius + B.radius) * 0.5 * Math.random();
-                    const fragPos = new THREE.Vector3(cmX + rx*rSum, cmY + ry*rSum, cmZ + rz*rSum);
-                    
+                    const scatterDir = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize();
+                    const offset = scatterDir.clone().multiplyScalar((A.radius + B.radius) * 0.5 * Math.random());
+                    const fragPos = centerOfMass.clone().add(offset);
                     const ejectSpeed = Math.sqrt(energy / totalMass) * (0.5 + Math.random());
-                    const fragVel = new THREE.Vector3(baseVx + rx*ejectSpeed, baseVy + ry*ejectSpeed, baseVz + rz*ejectSpeed);
-                    
+                    const fragVel = baseVel.clone().add(scatterDir.multiplyScalar(ejectSpeed));
                     const fragTemp = Math.max(A.temperature, B.temperature) + (energy / totalMass) * 0.1;
+
                     const type = A.mass > B.mass ? A.type : B.type;
-                    
                     const frag = new Body(fragMass, fragPos, fragVel, type, fragTemp);
                     
                     newBodiesList.push(frag);
@@ -378,7 +271,7 @@
         }
 
         // ==========================================
-        // 3. VISUALS & RENDERING (OPTIMIZED)
+        // 3. VISUALS & RENDERING
         // ==========================================
 
         class VisualSystem {
@@ -386,7 +279,7 @@
                 this.scene = scene;
                 this.camera = camera;
                 this.meshMap = new Map();
-                this.trailMap = new Map();
+                this.trailMap = new Map(); // Stores Ribbon data
                 
                 this.geoLow = new THREE.IcosahedronGeometry(1, 0);
                 this.geoHigh = new THREE.IcosahedronGeometry(1, 1);
@@ -395,7 +288,7 @@
                 this.particles = [];
                 const pGeo = new THREE.BufferGeometry();
                 const pMat = new THREE.PointsMaterial({ 
-                    color: 0xff5500,
+                    color: 0xff5500, // Fire Orange
                     size: 0.8, 
                     blending: THREE.AdditiveBlending, 
                     transparent: true, 
@@ -409,18 +302,21 @@
                 this.maxParticles = 5000;
                 this.pPositions = new Float32Array(this.maxParticles * 3);
                 pGeo.setAttribute('position', new THREE.BufferAttribute(this.pPositions, 3));
+
+                // Reusable vectors for Ribbon Math
+                this.vecToCam = new THREE.Vector3();
+                this.vecDir = new THREE.Vector3();
+                this.vecPerp = new THREE.Vector3();
             }
 
             update(bodies, dt) {
                 const currentIds = new Set();
-                _camPos.copy(this.camera.position); // Cache camera pos once per frame
                 
-                for(let i=0; i<bodies.length; i++) {
-                    const body = bodies[i];
+                bodies.forEach(body => {
                     currentIds.add(body.id);
                     let mesh = this.meshMap.get(body.id);
 
-                    // 1. Create Body Mesh if needed
+                    // 1. Create Body Mesh
                     if (!mesh) {
                         const matProps = body.matProps;
                         const mat = new THREE.MeshStandardMaterial({
@@ -435,21 +331,23 @@
                         this.scene.add(mesh);
                         this.meshMap.set(body.id, mesh);
 
-                        // Ribbon Trail Setup
+                        // Ribbon Trail Creation
                         const trailLen = CONFIG.trailLength;
                         const trailGeo = new THREE.BufferGeometry();
+                        
+                        // 2 vertices per step for a ribbon strip
                         const positions = new Float32Array(trailLen * 2 * 3); 
+                        // Create Indices for Triangle Strip
                         const indices = [];
-                        for (let j = 0; j < trailLen - 1; j++) {
-                            const v = j * 2;
+                        for (let i = 0; i < trailLen - 1; i++) {
+                            const v = i * 2;
                             indices.push(v, v+1, v+2);
                             indices.push(v+1, v+3, v+2);
                         }
+                        
                         trailGeo.setIndex(indices);
                         trailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                        // Mark as dynamic for optimization
-                        trailGeo.attributes.position.usage = THREE.DynamicDrawUsage; 
-
+                        
                         const trailMat = new THREE.MeshBasicMaterial({ 
                             color: matProps.color, 
                             transparent: true, 
@@ -463,86 +361,72 @@
                         trailMesh.frustumCulled = false;
                         this.scene.add(trailMesh);
                         
-                        // Fill initial history
-                        for(let k=0; k<trailLen; k++) body.pushHistory();
+                        // Initialize history with current position
+                        for(let k=0; k<trailLen; k++) body.history.push(body.pos.clone());
 
-                        this.trailMap.set(body.id, { mesh: trailMesh });
+                        this.trailMap.set(body.id, { mesh: trailMesh, positions: positions });
                     }
 
-                    // 2. Update Mesh
-                    mesh.position.set(body.pos.x, body.pos.y, body.pos.z);
+                    // 2. Update Body Transformation
+                    mesh.position.copy(body.pos);
                     mesh.scale.setScalar(body.radius);
                     mesh.rotation.x += body.vel.z * 0.1 * dt;
                     mesh.rotation.y += body.vel.x * 0.1 * dt;
 
-                    // 3. Thermal
+                    // 3. Thermal Glow & Fire Particles
                     if (body.temperature > 50) {
                         const intensity = Math.min(body.temperature / 1000, 1.0);
                         mesh.material.emissive.setRGB(1.0, Math.max(0, 1.0 - intensity * 0.5), Math.max(0, 1.0 - intensity));
                         mesh.material.emissiveIntensity = intensity * CONFIG.heatToGlow;
 
-                        if (Math.random() < 0.1) this.spawnTrail(body);
+                        const spawnChance = Math.min(0.1 + (body.temperature - 50) * 0.002, 1.0);
+                        if (Math.random() < spawnChance) {
+                            this.spawnTrail(body);
+                        }
                     } else {
                         mesh.material.emissive.setHex(0x000000);
                     }
 
-                    // 4. Optimized Ribbon Update
+                    // 4. Update Ribbon Trail (Longer V-Shape)
                     const trailData = this.trailMap.get(body.id);
-                    body.pushHistory(); // Update ring buffer
+                    
+                    // Update history buffer
+                    body.history.unshift(body.pos.clone());
+                    if (body.history.length > CONFIG.trailLength) body.history.pop();
 
                     const posAttr = trailData.mesh.geometry.attributes.position;
+                    // Buffer resizing check if config changed dynamically (simplified here to just array access)
                     const posArr = posAttr.array;
                     
-                    const count = Math.min(body.historyCount, CONFIG.trailLength);
-                    const halfRadius = body.radius * 0.8;
-
-                    for (let k = 0; k < count; k++) {
-                        body.getHistoryPos(k, _v1); // Current point (Head is k=0)
-
-                        // Calculate width (Tapering)
-                        const widthRatio = 1.0 - (k / (CONFIG.trailLength - 1));
-                        const currentWidth = halfRadius * Math.max(0, widthRatio);
+                    for (let i = 0; i < body.history.length; i++) {
+                        const p = body.history[i];
                         
-                        // Direction Vector
-                        if (k < count - 1) {
-                            body.getHistoryPos(k+1, _v2); // Next point
-                            _v2.subVectors(_v1, _v2); // dir = curr - next
+                        // V-Shape Tapering Logic
+                        const widthRatio = 1.0 - (i / (CONFIG.trailLength - 1));
+                        const currentWidth = body.radius * 0.8 * Math.max(0, widthRatio);
+
+                        // Billboard Calculation
+                        this.vecToCam.subVectors(this.camera.position, p);
+                        
+                        if (i < body.history.length - 1) {
+                            this.vecDir.subVectors(body.history[i], body.history[i+1]);
                         } else {
-                            // Use previous dir for last point
-                             // _v2 already holds previous direction roughly
+                            this.vecDir.subVectors(body.history[i-1], body.history[i]);
                         }
                         
-                        // Billboarding: Vector to Camera
-                        _v3.subVectors(_camPos, _v1);
+                        this.vecPerp.crossVectors(this.vecToCam, this.vecDir).normalize().multiplyScalar(currentWidth);
 
-                        // Cross Product for Perpendicular Vector
-                        // _v2 = dir, _v3 = view
-                        // _v2.cross(_v3) -> but we need result in temp
-                        const px = _v3.y * _v2.z - _v3.z * _v2.y;
-                        const py = _v3.z * _v2.x - _v3.x * _v2.z;
-                        const pz = _v3.x * _v2.y - _v3.y * _v2.x;
-                        
-                        // Normalize and Scale
-                        const len = Math.sqrt(px*px + py*py + pz*pz);
-                        if (len > 0.0001) {
-                            const s = currentWidth / len;
-                            const offX = px * s;
-                            const offY = py * s;
-                            const offZ = pz * s;
+                        posArr[i*6 + 0] = p.x + this.vecPerp.x;
+                        posArr[i*6 + 1] = p.y + this.vecPerp.y;
+                        posArr[i*6 + 2] = p.z + this.vecPerp.z;
 
-                            const idx = k * 6;
-                            // Vertex Left
-                            posArr[idx]   = _v1.x + offX;
-                            posArr[idx+1] = _v1.y + offY;
-                            posArr[idx+2] = _v1.z + offZ;
-                            // Vertex Right
-                            posArr[idx+3] = _v1.x - offX;
-                            posArr[idx+4] = _v1.y - offY;
-                            posArr[idx+5] = _v1.z - offZ;
-                        }
+                        posArr[i*6 + 3] = p.x - this.vecPerp.x;
+                        posArr[i*6 + 4] = p.y - this.vecPerp.y;
+                        posArr[i*6 + 5] = p.z - this.vecPerp.z;
                     }
+                    
                     posAttr.needsUpdate = true;
-                }
+                });
 
                 this.updateParticles(dt);
             }
@@ -586,29 +470,31 @@
             }
 
             spawnExplosion(pos, temp) {
-                const count = 10; // Reduced for performance
+                const count = 15;
                 for(let i=0; i<count; i++) {
                     if (this.particles.length >= this.maxParticles) this.particles.shift();
                     this.particles.push({
-                        x: pos.x, y: pos.y, z: pos.z,
-                        vx: (Math.random()-0.5)*8, vy: (Math.random()-0.5)*8, vz: (Math.random()-0.5)*8,
+                        pos: pos.clone(),
+                        vel: new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize().multiplyScalar(Math.random() * 8),
                         life: 1.0,
-                        decay: 0.02 + Math.random() * 0.03
+                        decay: 0.01 + Math.random() * 0.03
                     });
                 }
             }
 
             spawnTrail(body) {
                 if (this.particles.length >= this.maxParticles) this.particles.shift();
+
+                const offset = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).multiplyScalar(body.radius);
+                const spawnPos = body.pos.clone().add(offset);
                 
-                const r = body.radius;
+                const trailVel = body.vel.clone().multiplyScalar(0.1).add(
+                    new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).multiplyScalar(0.5)
+                );
+
                 this.particles.push({
-                    x: body.pos.x + (Math.random()-0.5)*r,
-                    y: body.pos.y + (Math.random()-0.5)*r,
-                    z: body.pos.z + (Math.random()-0.5)*r,
-                    vx: body.vel.x * 0.1,
-                    vy: body.vel.y * 0.1,
-                    vz: body.vel.z * 0.1,
+                    pos: spawnPos,
+                    vel: trailVel,
                     life: 0.8 + Math.random() * 0.4,
                     decay: 0.03
                 });
@@ -621,19 +507,16 @@
                 for (let i = this.particles.length - 1; i >= 0; i--) {
                     const p = this.particles[i];
                     p.life -= p.decay;
-                    
-                    p.x += p.vx * dt;
-                    p.y += p.vy * dt;
-                    p.z += p.vz * dt;
+                    p.pos.addScaledVector(p.vel, dt);
                     
                     if (p.life <= 0) {
                         this.particles.splice(i, 1);
                         continue;
                     }
 
-                    positions[pCount*3] = p.x;
-                    positions[pCount*3+1] = p.y;
-                    positions[pCount*3+2] = p.z;
+                    positions[pCount*3] = p.pos.x;
+                    positions[pCount*3+1] = p.pos.y;
+                    positions[pCount*3+2] = p.pos.z;
                     pCount++;
                 }
                 
@@ -662,7 +545,7 @@
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
         camera.position.set(0, 80, 150);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+        const renderer = new THREE.WebGLRenderer({ antialias: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.toneMapping = THREE.ReinhardToneMapping;
         document.getElementById('canvas-container').appendChild(renderer.domElement);
@@ -699,18 +582,18 @@
             visuals.garbageCollect([]); 
             
             if (type === 'galaxy') {
-                physics.addBody(new Body(500, new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), 'metal', 1000));
+                physics.addBody(new Body(500, V3(0,0,0), V3(0,0,0), 'metal', 1000));
                 for(let i=0; i<150; i++) {
                     const angle = Math.random() * Math.PI * 2;
                     const dist = 30 + Math.random() * 60;
                     const velocity = Math.sqrt(CONFIG.G * 500 / dist);
-                    const pos = new THREE.Vector3(Math.cos(angle)*dist, (Math.random()-0.5)*2, Math.sin(angle)*dist);
-                    const vel = new THREE.Vector3(-Math.sin(angle)*velocity, 0, Math.cos(angle)*velocity);
+                    const pos = V3(Math.cos(angle)*dist, (Math.random()-0.5)*2, Math.sin(angle)*dist);
+                    const vel = V3(-Math.sin(angle)*velocity, 0, Math.cos(angle)*velocity);
                     physics.addBody(new Body(Math.random() * 2 + 0.5, pos, vel, 'rock'));
                 }
             } else if (type === 'collision') {
-                physics.addBody(new Body(100, new THREE.Vector3(-40, 0, 0), new THREE.Vector3(1, 0, 0), 'rock'));
-                physics.addBody(new Body(100, new THREE.Vector3(40, 0, 10), new THREE.Vector3(-1, 0, 0), 'ice')); 
+                physics.addBody(new Body(100, V3(-40, 0, 0), V3(1, 0, 0), 'rock'));
+                physics.addBody(new Body(100, V3(40, 0, 10), V3(-1, 0, 0), 'ice')); 
             }
         }
         
