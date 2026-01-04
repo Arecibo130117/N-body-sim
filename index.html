@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>N-Body Fire & Fracture Sim (Ribbon Trails)</title>
+    <title>N-Body Sim: Long V-Trails</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #050508; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -47,8 +47,8 @@
             softening: 0.5,        
             dt: 0.016,             
             subSteps: 2,           
-            maxBodies: 600,        // [Fix] 개수 제한을 늘림
-            trailLength: 30,       // [Visual] 리본 꼬리 길이 (너무 길면 성능 저하)
+            maxBodies: 500,        // [Balance] 궤적이 길어졌으므로 개수 제한을 약간 조절 (성능 유지)
+            trailLength: 100,      // [Updated] 궤적 길이를 30 -> 100으로 대폭 증가
             
             // Fracture Props
             fractureThreshold: 15, 
@@ -104,7 +104,7 @@
             }
 
             addBody(body) {
-                // [Fix] 개수가 꽉 차면 가장 오래된 행성을 제거하고 새 행성을 추가
+                // FIFO: 개수가 꽉 차면 가장 오래된 행성을 제거
                 if (this.bodies.length >= CONFIG.maxBodies) {
                     this.bodies.shift(); 
                 }
@@ -271,7 +271,7 @@
         }
 
         // ==========================================
-        // 3. VISUALS & RENDERING (UPDATED)
+        // 3. VISUALS & RENDERING
         // ==========================================
 
         class VisualSystem {
@@ -331,7 +331,7 @@
                         this.scene.add(mesh);
                         this.meshMap.set(body.id, mesh);
 
-                        // [Visual Fix] Ribbon Trail Creation (V-shape)
+                        // Ribbon Trail Creation
                         const trailLen = CONFIG.trailLength;
                         const trailGeo = new THREE.BufferGeometry();
                         
@@ -387,44 +387,39 @@
                         mesh.material.emissive.setHex(0x000000);
                     }
 
-                    // 4. Update Ribbon Trail (V-Shape Logic)
+                    // 4. Update Ribbon Trail (Longer V-Shape)
                     const trailData = this.trailMap.get(body.id);
+                    
                     // Update history buffer
                     body.history.unshift(body.pos.clone());
                     if (body.history.length > CONFIG.trailLength) body.history.pop();
 
                     const posAttr = trailData.mesh.geometry.attributes.position;
+                    // Buffer resizing check if config changed dynamically (simplified here to just array access)
                     const posArr = posAttr.array;
                     
                     for (let i = 0; i < body.history.length; i++) {
                         const p = body.history[i];
                         
-                        // Calculate V-shape Width: 
-                        // Head (i=0) is full width, Tail (i=end) is 0 width
+                        // V-Shape Tapering Logic
                         const widthRatio = 1.0 - (i / (CONFIG.trailLength - 1));
                         const currentWidth = body.radius * 0.8 * Math.max(0, widthRatio);
 
-                        // Calculate Ribbon Orientation (Billboarding)
-                        // Vector from point to camera
+                        // Billboard Calculation
                         this.vecToCam.subVectors(this.camera.position, p);
                         
-                        // Direction of trail (curr - prev)
                         if (i < body.history.length - 1) {
                             this.vecDir.subVectors(body.history[i], body.history[i+1]);
                         } else {
-                            // last point uses previous dir
                             this.vecDir.subVectors(body.history[i-1], body.history[i]);
                         }
                         
-                        // Cross product to get "Right" vector relative to camera view
                         this.vecPerp.crossVectors(this.vecToCam, this.vecDir).normalize().multiplyScalar(currentWidth);
 
-                        // Vertex 1 (Left)
                         posArr[i*6 + 0] = p.x + this.vecPerp.x;
                         posArr[i*6 + 1] = p.y + this.vecPerp.y;
                         posArr[i*6 + 2] = p.z + this.vecPerp.z;
 
-                        // Vertex 2 (Right)
                         posArr[i*6 + 3] = p.x - this.vecPerp.x;
                         posArr[i*6 + 4] = p.y - this.vecPerp.y;
                         posArr[i*6 + 5] = p.z - this.vecPerp.z;
