@@ -1,1152 +1,649 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
-  <meta charset="UTF-8" />
-  <title>N-Body Gravity: Realistic Trajectories, Fire Trails & Add Mode Lock</title>
-  <style>
-    html, body { margin: 0; padding: 0; overflow: hidden; background: #050508; font-family: 'Segoe UI', system-ui, sans-serif; }
-    #canvas-container { width: 100vw; height: 100vh; display: block; }
-    #hud { position: absolute; inset: 0; pointer-events: none; user-select: none; }
-    #top-left {
-      pointer-events: auto;
-
-      position: absolute; top: 18px; left: 18px;
-      color: rgba(255,255,255,0.88);
-      text-shadow: 0 0 6px rgba(0,0,0,0.9);
-      line-height: 1.25;
-      max-width: min(520px, calc(100vw - 36px));
-    }
-    #mode-ui {
-      display: inline-block;
-      margin-top: 10px;
-      padding: 8px 10px;
-      border-radius: 10px;
-      background: rgba(0,255,120,0.10);
-      border: 1px solid rgba(0,255,120,0.35);
-      color: rgba(0,255,120,0.95);
-      font-weight: 700;
-      letter-spacing: 0.3px;
-    }
-    
-    #add-panel{
-      pointer-events: auto;
-      user-select: none;
-      margin-top: 10px;
-      padding: 10px 10px;
-      border-radius: 12px;
-      background: rgba(10,10,16,0.55);
-      border: 1px solid rgba(255,255,255,0.14);
-      backdrop-filter: blur(6px);
-      color: rgba(255,255,255,0.88);
-      max-width: 420px;
-    }
-    #add-panel .row{
-      display: grid;
-      grid-template-columns: 54px 1fr auto;
-      gap: 10px;
-      align-items: center;
-      margin: 6px 0;
-    }
-    #add-panel label{
-      opacity: 0.85;
-      font-weight: 700;
-      font-size: 13px;
-    }
-    #add-panel input[type="range"]{ width: 100%; }
-    #add-panel input[type="checkbox"]{ transform: translateY(1px); }
-    #massVal{
-      display:inline-block;
-      min-width: 34px;
-      text-align: right;
-      font-variant-numeric: tabular-nums;
-      font-weight: 800;
-      color: #ffcfb6;
-    }
-#help {
-      position: absolute; bottom: 16px; left: 18px;
-      color: rgba(255,255,255,0.75);
-      text-shadow: 0 0 6px rgba(0,0,0,0.9);
-      font-size: 14px;
-    }
-    #help b { color: #ff4d00; }
-    #help kbd {
-      display: inline-block;
-      padding: 2px 6px;
-      border-radius: 6px;
-      border: 1px solid rgba(255,255,255,0.2);
-      background: rgba(0,0,0,0.35);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 12px;
-      margin: 0 2px;
-    }
-  </style>
-
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-    }
-  }
-  </script>
+    <meta charset="UTF-8">
+    <title>N-Body Sim v2: Meteor Tails & Advanced Control</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050508; font-family: 'Segoe UI', sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; display: block; }
+        #instructions {
+            position: absolute; bottom: 20px; left: 20px; color: rgba(255,255,255,0.7);
+            pointer-events: none; user-select: none; text-shadow: 0 0 5px black;
+        }
+        b { color: #ff9d00; }
+        .mode-indicator {
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+            font-size: 24px; font-weight: bold; color: white; text-shadow: 0 0 10px rgba(0,0,0,0.8);
+            pointer-events: none; opacity: 0.8;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
 </head>
-
 <body>
-  <div id="canvas-container"></div>
-  <div id="hud">
-    <div id="top-left">
-      <div style="font-size:18px;font-weight:800;">N‑Body Fire & Trajectory Sandbox</div>
-      <div style="opacity:0.92; margin-top:6px;">
-        현실적인 궤적(예측 라인) + 고속/충돌 발열 → <span style="color:#ff6a2a;font-weight:700;">불타는 꼬리</span>
-      </div>
-      <div id="mode-ui" style="display:none;">ADD MODE: CAMERA LOCKED</div>
-
-      <div id="add-panel" style="display:none;">
-        <div style="font-weight:800; margin-bottom:6px;">Add 설정</div>
-        <div class="row">
-          <label for="massRange">질량</label>
-          <input id="massRange" type="range" min="1" max="200" step="1" value="12">
-          <span id="massVal">12</span>
-        </div>
-        <div class="row">
-          <label for="randMass">랜덤</label>
-          <input id="randMass" type="checkbox" checked>
-          <span style="opacity:0.7;">(기본 범위 사용)</span>
-        </div>
-        <div style="opacity:0.7; font-size:12px; margin-top:6px;">
-          랜덤을 끄면 위 슬라이더 값으로 고정됩니다.
-        </div>
-      </div>
+    <div id="canvas-container"></div>
+    <div class="mode-indicator" id="modeLabel">VIEW MODE</div>
+    <div id="instructions">
+        <h2>Sim v2.0</h2>
+        <p>Current Mode: <span id="modeText">View (Orbit)</span></p>
+        <p>Physics: <b>Velocity Verlet</b> + <b>Thermal Fragmentation</b></p>
     </div>
 
-    <div id="help">
-      <div><kbd>A</kbd> : <b>Add 모드 토글</b> (Add 모드에서는 화면 회전/줌/팬 모두 잠금)</div>
-      <div>일반 모드: 우클릭 드래그/휠로 <b>카메라 조작</b></div>
-      <div>Add 모드: 좌클릭 드래그로 <b>물체 생성</b> (드래그 방향 반대로 초기 속도 부여)</div>
-    </div>
-  </div>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import GUI from 'three/addons/libs/lil-gui.module.min.js';
 
-  <script type="module">
-    import * as THREE from 'three';
-    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        // ==========================================
+        // 1. CONFIG
+        // ==========================================
+        const CONFIG = {
+            // Physics
+            G: 1.0,
+            dt: 0.016,
+            subSteps: 2,
+            maxBodies: 500,
+            
+            // Interaction
+            spawnMass: 20,       // Default spawn mass
+            spawnMode: false,    // Toggle
+            
+            // Visuals
+            trailLength: 120,    // Longer trails
+            particleLimit: 5000, // Budget for smoke/fire
+            
+            // Thermal
+            heatDecay: 0.992,
+            heatThreshold: 300,  // Temp needed to start smoking
+        };
 
-    // =========================
-    // CONFIG
-    // =========================
-    const CONFIG = {
-      // gravity / integrator
-      G: 0.55,
-      softening: 0.45,
-      dt: 0.016,
-      subSteps: 3,
+        const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 
-      // world
-      maxBodies: 420,
+        // ==========================================
+        // 2. PHYSICS CORE
+        // ==========================================
+        class Body {
+            constructor(mass, pos, vel, type = 'rock', temp = 0) {
+                this.id = Math.random().toString(36).substr(2, 9);
+                this.mass = mass;
+                this.invMass = mass > 0 ? 1 / mass : 0;
+                
+                this.pos = pos.clone();
+                this.vel = vel.clone();
+                this.acc = new THREE.Vector3(0, 0, 0);
+                
+                this.type = type;
+                // Density-based radius (Approx)
+                const density = type === 'metal' ? 3.0 : (type === 'ice' ? 0.8 : 1.5);
+                this.radius = Math.pow((3 * mass) / (4 * Math.PI * density), 1/3);
+                
+                this.temperature = temp;
+                this.color = new THREE.Color(type === 'ice' ? 0xaaccff : (type === 'metal' ? 0xaaaaaa : 0x886644));
+            }
 
-      // visuals
-      trailLength: 140,
-      trailOpacity: 0.65,
-
-      // heating / fire
-      heatDecay: 0.985,
-      heatFromSpeed: 0.050,      // v^2 based heating (acts like "atmospheric" / ablation)
-      heatFromCollision: 6.5,
-      igniteTemp: 16,            // above -> fire trail (line gets fiery + sparks spawn)
-      glowTemp: 55,              // strong emissive
-      maxTemp: 140,
-
-      // sparks
-      maxSparksPerBody: 220,
-      sparksPerSecond: 90,
-      sparkLife: [0.28, 0.85],   // seconds
-      sparkSpeed: [2.0, 12.0],   // initial speed
-      sparkDrag: 0.88,           // per second
-      sparkGravity: 1.8,         // gentle downward (adds shape)
-
-      // materials (density affects radius, and thus collision size)
-      materials: {
-        rock:  { density: 1.0, color: 0x555555 },
-
-      // fracture / break-up
-      fractureEnabled: true,
-      // lower -> breaks easier
-      fractureSpeedBase: 6.2,           // baseline relative speed for rock-sized bodies
-      fractureEnergyScale: 0.55,        // scales with size/strength
-      minFragmentMass: 0.25,
-      maxFragments: 9,
-      fragmentVelScale: 0.28,           // outward velocity from impact (fraction of relSpeed)
-      massLossOnFracture: 0.03,         // dust/heat loss
-
-      // material strength (higher = tougher)
-      materialStrength: {
-        rock: 1.0,
-        metal: 2.1,
-        ice: 0.65
-      },
-
-        metal: { density: 3.0, color: 0x8a8fb1 },
-        ice:   { density: 0.55, color: 0xaaccff }
-      },
-
-      // add-mode spawn
-      spawnMass: [4, 22],
-      spawnTemp: [8, 28],
-      spawnVelScale: 0.22,
-
-      // trajectory prediction
-      predictSeconds: 5.2,
-      predictDt: 0.033,
-      predictMaxPoints: 180
-    };
-
-    const V3 = (x=0,y=0,z=0) => new THREE.Vector3(x,y,z);
-
-    // =========================
-    // BODY
-    // =========================
-    class Body {
-      constructor(mass, pos, vel, type='rock', temp=0) {
-        this.id = Math.random().toString(36).slice(2);
-        this.mass = mass;
-        this.invMass = mass > 0 ? 1 / mass : 0;
-        this.pos = pos.clone();
-        this.vel = vel.clone();
-        this.acc = V3();
-        this.type = type;
-        this.matProps = CONFIG.materials[type] ?? CONFIG.materials.rock;
-
-        // radius from density
-        this.radius = Math.pow((3 * mass) / (4 * Math.PI * this.matProps.density), 1/3);
-
-        this.temperature = temp;
-        this.prevPos = pos.clone();
-      }
-
-      updateThermal(dt) {
-        // cool down
-        this.temperature *= Math.pow(CONFIG.heatDecay, dt * 60.0);
-        if (this.temperature < 0.08) this.temperature = 0;
-
-        // speed heating (v^2)
-        const v2 = this.vel.lengthSq();
-        this.temperature += v2 * CONFIG.heatFromSpeed * dt;
-
-        // clamp
-        if (this.temperature > CONFIG.maxTemp) this.temperature = CONFIG.maxTemp;
-      }
-    }
-
-    // =========================
-    // PHYSICS
-    // =========================
-    class PhysicsSystem {
-      constructor() { this.bodies = []; }
-
-      addBody(body) {
-        if (this.bodies.length >= CONFIG.maxBodies) return null;
-        this.bodies.push(body);
-        return body;
-      }
-
-      computeGravity() {
-        const N = this.bodies.length;
-        for (let i=0;i<N;i++) this.bodies[i].acc.set(0,0,0);
-
-        const vec = V3();
-        for (let i=0;i<N;i++) {
-          for (let j=i+1;j<N;j++) {
-            const A = this.bodies[i];
-            const B = this.bodies[j];
-            vec.subVectors(B.pos, A.pos);
-            const distSq = vec.lengthSq() + CONFIG.softening;
-            const invDist = 1 / Math.sqrt(distSq);
-            const invDist3 = invDist * invDist * invDist;
-            const f = CONFIG.G * A.mass * B.mass * invDist3;
-
-            // force direction
-            const fx = vec.x * f;
-            const fy = vec.y * f;
-            const fz = vec.z * f;
-
-            A.acc.x += fx * A.invMass;
-            A.acc.y += fy * A.invMass;
-            A.acc.z += fz * A.invMass;
-
-            B.acc.x -= fx * B.invMass;
-            B.acc.y -= fy * B.invMass;
-            B.acc.z -= fz * B.invMass;
-          }
+            updateThermal() {
+                this.temperature *= CONFIG.heatDecay;
+                if(this.temperature < 10) this.temperature = 0;
+            }
         }
-      }
 
-      
-      resolveCollisions(dt) {
-        const N = this.bodies.length;
+        class PhysicsSystem {
+            constructor() {
+                this.bodies = [];
+            }
 
-        // Defer removals/additions to avoid mutating while iterating
-        const toRemove = new Set();
-        const toAdd = [];
-
-        const randUnit = () => {
-          // random point on sphere
-          const u = Math.random()*2 - 1;
-          const th = Math.random()*Math.PI*2;
-          const r = Math.sqrt(Math.max(0, 1 - u*u));
-          return V3(r*Math.cos(th), u, r*Math.sin(th));
-        };
-
-        const strengthOf = (body) => {
-          const s = CONFIG.materialStrength?.[body.type];
-          return (s != null) ? s : 1.0;
-        };
-
-        const fractureThreshold = (A, B, relSpeed) => {
-          // Scale threshold with combined size and material toughness.
-          // Bigger + tougher bodies need higher impact to fracture, but keep overall "breakier".
-          const size = (A.radius + B.radius) * 0.5;
-          const tough = (strengthOf(A) + strengthOf(B)) * 0.5;
-          const base = CONFIG.fractureSpeedBase;
-          // size^(0.5) soft scaling, toughness scaling
-          const thresh = base * Math.pow(Math.max(0.6, size), CONFIG.fractureEnergyScale) * Math.pow(tough, 0.55);
-          return thresh;
-        };
-
-        const fractureBody = (body, nDir, relSpeed) => {
-          if (toRemove.has(body.id)) return;
-
-          // Do not fracture extremely small bodies (avoid infinite dust)
-          if (body.mass <= Math.max(CONFIG.minFragmentMass * 2.5, 0.6)) return;
-
-          // Determine fragment count based on impact severity
-          const sev = THREE.MathUtils.clamp((relSpeed - 2.5) / 18.0, 0, 1);
-          const target = Math.round(THREE.MathUtils.lerp(3, CONFIG.maxFragments, sev));
-          const count = THREE.MathUtils.clamp(target, 3, CONFIG.maxFragments);
-
-          // Mass budget (slight loss to "dust/heat")
-          const massBudget = body.mass * (1.0 - CONFIG.massLossOnFracture);
-          const minM = CONFIG.minFragmentMass;
-          if (massBudget <= minM * count) return;
-
-          // Random weights
-          let wSum = 0;
-          const w = new Array(count);
-          for (let i=0;i<count;i++){ w[i] = Math.pow(Math.random(), 0.65) + 0.12; wSum += w[i]; }
-
-          // Create fragments
-          for (let i=0;i<count;i++){
-            let m = (w[i] / wSum) * massBudget;
-            m = Math.max(minM, m);
-
-            // spawn position around parent
-            const off = randUnit().multiplyScalar(body.radius * (0.18 + 0.55*Math.random()));
-            const pos = body.pos.clone().add(off);
-
-            // velocity: inherit + outward cone from impact + random jitter
-            const out = randUnit().multiplyScalar(relSpeed * CONFIG.fragmentVelScale * (0.35 + 0.9*Math.random()));
-            // Bias outward away from impact direction
-            out.add(nDir.clone().multiplyScalar(relSpeed * CONFIG.fragmentVelScale * (0.2 + 0.8*Math.random())));
-
-            const vel = body.vel.clone().add(out);
-
-            const tempBoost = THREE.MathUtils.lerp(CONFIG.heatFromCollision * 2.0, CONFIG.heatFromCollision * 7.0, sev);
-            const temp = Math.min(CONFIG.maxTemp, body.temperature + tempBoost * relSpeed);
-
-            toAdd.push(new Body(m, pos, vel, body.type, temp));
-          }
-
-          toRemove.add(body.id);
-        };
-
-        for (let i=0;i<N;i++) {
-          for (let j=i+1;j<N;j++) {
-            const A = this.bodies[i];
-            const B = this.bodies[j];
-            if (!A || !B) continue;
-            if (toRemove.has(A.id) || toRemove.has(B.id)) continue;
-
-            const dx = B.pos.x - A.pos.x;
-            const dy = B.pos.y - A.pos.y;
-            const dz = B.pos.z - A.pos.z;
-            const dist = Math.sqrt(dx*dx+dy*dy+dz*dz);
-            const minDist = A.radius + B.radius;
-
-            if (dist > 0 && dist < minDist) {
-              const nx = dx / dist;
-              const ny = dy / dist;
-              const nz = dz / dist;
-              const penetration = (minDist - dist);
-
-              const totalInv = A.invMass + B.invMass;
-              const corrA = (A.invMass / totalInv) * penetration;
-              const corrB = (B.invMass / totalInv) * penetration;
-
-              A.pos.x -= nx * corrA;
-              A.pos.y -= ny * corrA;
-              A.pos.z -= nz * corrA;
-
-              B.pos.x += nx * corrB;
-              B.pos.y += ny * corrB;
-              B.pos.z += nz * corrB;
-
-              // relative velocity along normal
-              const rvx = A.vel.x - B.vel.x;
-              const rvy = A.vel.y - B.vel.y;
-              const rvz = A.vel.z - B.vel.z;
-              const relN = rvx*nx + rvy*ny + rvz*nz;
-
-              // For breakier impacts, damp bounce slightly
-              const e = 0.22;
-              const jImpulse = -(1 + e) * relN / totalInv;
-
-              // Apply impulse (if not fracturing immediately)
-              A.vel.x += nx * jImpulse * A.invMass;
-              A.vel.y += ny * jImpulse * A.invMass;
-              A.vel.z += nz * jImpulse * A.invMass;
-
-              B.vel.x -= nx * jImpulse * B.invMass;
-              B.vel.y -= ny * jImpulse * B.invMass;
-              B.vel.z -= nz * jImpulse * B.invMass;
-
-              // Heating from collision energy
-              const relSpeed = Math.sqrt(rvx*rvx + rvy*rvy + rvz*rvz);
-              const heat = relSpeed * CONFIG.heatFromCollision;
-              A.temperature = Math.min(CONFIG.maxTemp, A.temperature + heat);
-              B.temperature = Math.min(CONFIG.maxTemp, B.temperature + heat);
-
-              // =========================
-              // FRACTURE
-              // =========================
-              if (CONFIG.fractureEnabled) {
-                const nDir = V3(nx, ny, nz);
-
-                const thresh = fractureThreshold(A, B, relSpeed);
-
-                // Chance increases quickly once over threshold
-                const over = (relSpeed - thresh);
-                const p = THREE.MathUtils.clamp(over / (thresh * 0.55), 0, 1);
-                const roll = Math.random();
-
-                if (over > 0 && roll < (0.55 + 0.45*p)) {
-                  // Decide which fractures: smaller/softer more likely
-                  const sA = strengthOf(A);
-                  const sB = strengthOf(B);
-
-                  const scoreA = (relSpeed / (thresh * Math.pow(sA, 0.55))) * (1.0 / Math.pow(A.mass, 0.10));
-                  const scoreB = (relSpeed / (thresh * Math.pow(sB, 0.55))) * (1.0 / Math.pow(B.mass, 0.10));
-
-                  // fracture both often for dramatic effect
-                  if (scoreA > 0.98) fractureBody(A, nDir.clone().multiplyScalar(-1), relSpeed);
-                  if (scoreB > 0.98) fractureBody(B, nDir, relSpeed);
-
-                  // If still none fractured, fracture the weaker one
-                  if (!toRemove.has(A.id) && !toRemove.has(B.id)) {
-                    if (scoreA >= scoreB) fractureBody(A, nDir.clone().multiplyScalar(-1), relSpeed);
-                    else fractureBody(B, nDir, relSpeed);
-                  }
+            addBody(body) {
+                if (this.bodies.length < CONFIG.maxBodies) {
+                    this.bodies.push(body);
+                    return body;
                 }
-              }
+                return null;
             }
-          }
-        }
 
-        // Apply deferred changes
-        if (toRemove.size > 0) {
-          this.bodies = this.bodies.filter(b => !toRemove.has(b.id));
-        }
-        if (toAdd.length > 0) {
-          const room = Math.max(0, CONFIG.maxBodies - this.bodies.length);
-          for (let i=0;i<Math.min(room, toAdd.length);i++) {
-            this.bodies.push(toAdd[i]);
-          }
-        }
-      }
+            integrate(dt) {
+                const halfDt = 0.5 * dt;
+                
+                // 1. Verlet 1st Step
+                for (const b of this.bodies) {
+                    b.vel.addScaledVector(b.acc, halfDt);
+                    b.pos.addScaledVector(b.vel, dt);
+                }
 
+                // 2. Forces
+                this.computeGravity();
+                this.resolveCollisions(dt);
 
-      integrate(dt) {
-        // velocity verlet (kick-drift-kick)
-        const half = 0.5 * dt;
-
-        for (const b of this.bodies) {
-          b.prevPos.copy(b.pos);
-          b.vel.addScaledVector(b.acc, half);
-          b.pos.addScaledVector(b.vel, dt);
-        }
-
-        this.computeGravity();
-        this.resolveCollisions(dt);
-
-        for (const b of this.bodies) {
-          b.vel.addScaledVector(b.acc, half);
-          b.updateThermal(dt);
-        }
-      }
-    }
-
-    // =========================
-    // SPARKS (per body) - additive points with lifetime
-    // =========================
-    class SparkEmitter {
-      constructor(scene) {
-        this.scene = scene;
-        this.map = new Map(); // bodyId -> emitter data
-      }
-
-      _ensure(body) {
-        if (this.map.has(body.id)) return this.map.get(body.id);
-
-        const max = CONFIG.maxSparksPerBody;
-        const positions = new Float32Array(max * 3);
-        const colors = new Float32Array(max * 3);
-        const sizes = new Float32Array(max);
-        const ages = new Float32Array(max);
-        const lifes = new Float32Array(max);
-        const vels = new Float32Array(max * 3);
-        const alive = new Uint8Array(max);
-
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        geom.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
-        geom.setDrawRange(0, max);
-
-        // PointsMaterial doesn't use custom size attribute; so we use a tiny shader for size + color + fade.
-        const mat = new THREE.ShaderMaterial({
-          transparent: true,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-          vertexColors: true,
-          uniforms: {
-            uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
-            uSize: { value: 7.0 }
-          },
-          vertexShader: `
-            attribute float aSize;
-            varying vec3 vColor;
-            void main(){
-              vColor = color;
-              vec4 mv = modelViewMatrix * vec4(position, 1.0);
-              gl_Position = projectionMatrix * mv;
-              float dist = max(0.001, -mv.z);
-              gl_PointSize = aSize * (300.0 / dist);
+                // 3. Verlet 2nd Step
+                for (const b of this.bodies) {
+                    b.vel.addScaledVector(b.acc, halfDt);
+                    b.updateThermal();
+                }
             }
-          `,
-          fragmentShader: `
-            varying vec3 vColor;
-            void main(){
-              vec2 uv = gl_PointCoord * 2.0 - 1.0;
-              float r2 = dot(uv, uv);
-              float a = exp(-r2 * 2.8);
-              gl_FragColor = vec4(vColor, a);
+
+            computeGravity() {
+                const N = this.bodies.length;
+                for (let i = 0; i < N; i++) this.bodies[i].acc.set(0,0,0);
+
+                const G = CONFIG.G;
+                const eps = 0.5; // Softening
+                const vec = new THREE.Vector3();
+
+                for (let i = 0; i < N; i++) {
+                    for (let j = i + 1; j < N; j++) {
+                        const A = this.bodies[i];
+                        const B = this.bodies[j];
+                        vec.subVectors(B.pos, A.pos);
+                        const distSq = vec.lengthSq();
+                        const f = G / Math.pow(distSq + eps*eps, 1.5);
+
+                        const fx = f * vec.x;
+                        const fy = f * vec.y;
+                        const fz = f * vec.z;
+
+                        A.acc.x += fx * B.mass;
+                        A.acc.y += fy * B.mass;
+                        A.acc.z += fz * B.mass;
+                        B.acc.x -= fx * A.mass;
+                        B.acc.y -= fy * A.mass;
+                        B.acc.z -= fz * A.mass;
+                    }
+                }
             }
-          `
+
+            resolveCollisions(dt) {
+                const removed = new Set();
+                const newBodies = [];
+                const vec = new THREE.Vector3();
+                const relVel = new THREE.Vector3();
+
+                for (let i = 0; i < this.bodies.length; i++) {
+                    if (removed.has(i)) continue;
+                    for (let j = i + 1; j < this.bodies.length; j++) {
+                        if (removed.has(j)) continue;
+
+                        const A = this.bodies[i];
+                        const B = this.bodies[j];
+                        vec.subVectors(B.pos, A.pos);
+                        const dist = vec.length();
+                        const minDist = A.radius + B.radius;
+
+                        if (dist < minDist) {
+                            vec.normalize();
+                            relVel.subVectors(B.vel, A.vel);
+                            const vRel = relVel.dot(vec);
+
+                            if (vRel < 0) {
+                                // Impact Physics
+                                const restitution = 0.3;
+                                const impulseMag = -(1 + restitution) * vRel / (A.invMass + B.invMass);
+                                const impulse = vec.clone().multiplyScalar(impulseMag);
+
+                                // Heat Gen
+                                const ke = 0.5 * (A.mass * B.mass / (A.mass + B.mass)) * vRel * vRel;
+                                A.temperature += (ke / A.mass) * 0.8;
+                                B.temperature += (ke / B.mass) * 0.8;
+
+                                // Separation
+                                const correction = (minDist - dist) / (A.invMass + B.invMass) * 0.8;
+                                A.pos.sub(vec.clone().multiplyScalar(correction * A.invMass));
+                                B.pos.add(vec.clone().multiplyScalar(correction * B.invMass));
+
+                                // Fracture?
+                                if (ke / (A.mass + B.mass) > 15) {
+                                    // Simple split logic
+                                    removed.add(i);
+                                    removed.add(j);
+                                    this.fracture(A, B, ke, newBodies);
+                                    visuals.triggerFlash(A.pos.clone().add(B.pos).multiplyScalar(0.5), ke);
+                                } else {
+                                    A.vel.sub(impulse.clone().multiplyScalar(A.invMass));
+                                    B.vel.add(impulse.clone().multiplyScalar(B.invMass));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (removed.size > 0) {
+                    this.bodies = this.bodies.filter((_, i) => !removed.has(i));
+                    visuals.garbageCollect(this.bodies);
+                }
+                newBodies.forEach(b => this.addBody(b));
+            }
+
+            fracture(A, B, energy, list) {
+                // Simplified fracture for demo
+                const totalMass = A.mass + B.mass;
+                const center = A.pos.clone().multiplyScalar(A.mass).add(B.pos.clone().multiplyScalar(B.mass)).multiplyScalar(1/totalMass);
+                const baseVel = A.vel.clone().multiplyScalar(A.mass).add(B.vel.clone().multiplyScalar(B.mass)).multiplyScalar(1/totalMass);
+                
+                const count = Math.min(10, Math.floor(3 + energy / 20));
+                let mRem = totalMass;
+
+                for(let k=0; k<count; k++) {
+                    const mFrag = k === count-1 ? mRem : mRem * (0.2 + Math.random()*0.3);
+                    if (mFrag < 0.1) continue;
+                    mRem -= mFrag;
+
+                    const dir = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize();
+                    const speed = Math.sqrt(energy/totalMass) * (0.5 + Math.random());
+                    
+                    const frag = new Body(mFrag, center.clone().add(dir.multiplyScalar(A.radius)), baseVel.clone().add(dir.multiplyScalar(speed)), 'rock', Math.max(A.temperature, B.temperature)+200);
+                    frag.isFragment = true;
+                    list.push(frag);
+                }
+            }
+        }
+
+        // ==========================================
+        // 3. VISUALS (Particles & Trails)
+        // ==========================================
+        class ParticleSystem {
+            constructor(scene) {
+                this.limit = CONFIG.particleLimit;
+                this.positions = new Float32Array(this.limit * 3);
+                this.colors = new Float32Array(this.limit * 3);
+                this.sizes = new Float32Array(this.limit);
+                this.data = []; // { life, maxLife, vel }
+
+                const geo = new THREE.BufferGeometry();
+                geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+                geo.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
+                geo.setAttribute('size', new THREE.BufferAttribute(this.sizes, 1));
+
+                // Shader Material for Fire/Smoke
+                const mat = new THREE.ShaderMaterial({
+                    uniforms: {
+                        pointTexture: { value: new THREE.TextureLoader().load( 'https://threejs.org/examples/textures/sprites/spark1.png' ) }
+                    },
+                    vertexShader: `
+                        attribute float size;
+                        varying vec3 vColor;
+                        void main() {
+                            vColor = color;
+                            vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+                            gl_PointSize = size * ( 300.0 / -mvPosition.z );
+                            gl_Position = projectionMatrix * mvPosition;
+                        }
+                    `,
+                    fragmentShader: `
+                        uniform sampler2D pointTexture;
+                        varying vec3 vColor;
+                        void main() {
+                            gl_FragColor = vec4( vColor, 1.0 ) * texture2D( pointTexture, gl_PointCoord );
+                        }
+                    `,
+                    blending: THREE.AdditiveBlending,
+                    depthWrite: false,
+                    transparent: true
+                });
+
+                this.mesh = new THREE.Points(geo, mat);
+                this.mesh.frustumCulled = false;
+                scene.add(this.mesh);
+            }
+
+            emit(pos, vel, color, size, life) {
+                if (this.data.length >= this.limit) return;
+                
+                const idx = this.data.length;
+                this.positions[idx*3] = pos.x;
+                this.positions[idx*3+1] = pos.y;
+                this.positions[idx*3+2] = pos.z;
+                
+                this.colors[idx*3] = color.r;
+                this.colors[idx*3+1] = color.g;
+                this.colors[idx*3+2] = color.b;
+                
+                this.sizes[idx] = size;
+                
+                this.data.push({ 
+                    life: life, 
+                    maxLife: life, 
+                    vel: vel.clone().add(new THREE.Vector3((Math.random()-0.5)*2, (Math.random()-0.5)*2, (Math.random()-0.5)*2)) 
+                });
+            }
+
+            update(dt) {
+                let count = 0;
+                for (let i = 0; i < this.data.length; i++) {
+                    const p = this.data[i];
+                    p.life -= dt;
+
+                    if (p.life > 0) {
+                        // Move
+                        this.positions[count*3] += p.vel.x * dt;
+                        this.positions[count*3+1] += p.vel.y * dt;
+                        this.positions[count*3+2] += p.vel.z * dt;
+
+                        // Color fade (Fire -> Smoke)
+                        const ratio = p.life / p.maxLife;
+                        // Simple color shift handled by initial emission color mostly, 
+                        // but let's dim it
+                        this.sizes[count] *= 0.98; // Shrink slightly
+
+                        // Shift data if needed to keep array compact
+                        if (count !== i) {
+                            this.positions[count*3] = this.positions[i*3];
+                            this.positions[count*3+1] = this.positions[i*3+1];
+                            this.positions[count*3+2] = this.positions[i*3+2];
+                            this.colors[count*3] = this.colors[i*3] * ratio; // Fade out
+                            this.colors[count*3+1] = this.colors[i*3+1] * ratio;
+                            this.colors[count*3+2] = this.colors[i*3+2] * ratio;
+                            this.sizes[count] = this.sizes[i];
+                            this.data[count] = p;
+                        }
+                        count++;
+                    }
+                }
+                
+                this.data.length = count;
+                this.mesh.geometry.setDrawRange(0, count);
+                this.mesh.geometry.attributes.position.needsUpdate = true;
+                this.mesh.geometry.attributes.color.needsUpdate = true;
+                this.mesh.geometry.attributes.size.needsUpdate = true;
+            }
+        }
+
+        class VisualSystem {
+            constructor(scene) {
+                this.scene = scene;
+                this.meshMap = new Map();
+                this.trailMap = new Map();
+                this.particles = new ParticleSystem(scene);
+                
+                this.geo = new THREE.IcosahedronGeometry(1, 1);
+            }
+
+            update(bodies, dt) {
+                const activeIds = new Set();
+                
+                bodies.forEach(body => {
+                    activeIds.add(body.id);
+                    let entry = this.meshMap.get(body.id);
+
+                    if (!entry) {
+                        // Create Mesh
+                        const mat = new THREE.MeshStandardMaterial({
+                            color: body.color, roughness: 0.6, metalness: 0.2,
+                            emissive: 0x000000
+                        });
+                        const mesh = new THREE.Mesh(this.geo, mat);
+                        this.scene.add(mesh);
+                        
+                        // Create Advanced Trail (BufferGeometry with Vertex Colors)
+                        const tLen = CONFIG.trailLength;
+                        const tGeo = new THREE.BufferGeometry();
+                        const tPos = new Float32Array(tLen * 3);
+                        const tCol = new Float32Array(tLen * 3); // For gradients
+                        
+                        // Init trail at spawn pos
+                        for(let i=0; i<tLen*3; i+=3) {
+                            tPos[i]=body.pos.x; tPos[i+1]=body.pos.y; tPos[i+2]=body.pos.z;
+                        }
+
+                        tGeo.setAttribute('position', new THREE.BufferAttribute(tPos, 3));
+                        tGeo.setAttribute('color', new THREE.BufferAttribute(tCol, 3));
+
+                        const tMat = new THREE.LineBasicMaterial({
+                            vertexColors: true,
+                            transparent: true, opacity: 0.6,
+                            blending: THREE.AdditiveBlending
+                        });
+                        const trail = new THREE.Line(tGeo, tMat);
+                        trail.frustumCulled = false;
+                        this.scene.add(trail);
+
+                        entry = { mesh, trail, tPos, tCol, idx: 0 };
+                        this.meshMap.set(body.id, entry);
+                    }
+
+                    // 1. Update Mesh Transform
+                    entry.mesh.position.copy(body.pos);
+                    entry.mesh.scale.setScalar(body.radius);
+                    entry.mesh.rotation.x += dt;
+                    
+                    // 2. Thermal Visuals (Glow & Meteor Tail)
+                    const tempRatio = Math.min(body.temperature / 2000, 1.0);
+                    if (body.temperature > 50) {
+                        entry.mesh.material.emissive.setHSL(0.05, 1.0, 0.5 * tempRatio);
+                        entry.mesh.material.emissiveIntensity = tempRatio * 3.0;
+                    } else {
+                        entry.mesh.material.emissive.setHex(0x000000);
+                    }
+
+                    // Meteor Effect: Emit particles if hot and moving
+                    if (body.temperature > CONFIG.heatThreshold) {
+                        const speed = body.vel.length();
+                        const emitCount = Math.floor(speed * tempRatio * 0.5); // More speed/heat = more particles
+                        
+                        for(let k=0; k<emitCount; k++) {
+                            // Emit behind the body
+                            const backDir = body.vel.clone().normalize().negate();
+                            const offset = backDir.clone().add(new THREE.Vector3((Math.random()-0.5), (Math.random()-0.5), (Math.random()-0.5)).multiplyScalar(0.5));
+                            const spawnPos = body.pos.clone().add(offset.multiplyScalar(body.radius));
+                            
+                            // Fire Color (Orange/Yellow) to Smoke (Gray)
+                            const pColor = new THREE.Color().setHSL(0.05 + Math.random()*0.1, 1.0, 0.5 + Math.random()*0.5);
+                            this.particles.emit(spawnPos, body.vel.clone().multiplyScalar(0.2), pColor, body.radius * (2 + Math.random()*2), 1.0 + Math.random());
+                        }
+                    }
+
+                    // 3. Update Trail
+                    // Cyclic buffer for positions
+                    const headIdx = entry.idx;
+                    entry.tPos[headIdx*3] = body.pos.x;
+                    entry.tPos[headIdx*3+1] = body.pos.y;
+                    entry.tPos[headIdx*3+2] = body.pos.z;
+                    
+                    // Update Colors for Gradient (Fade out at tail)
+                    const tLen = CONFIG.trailLength;
+                    for (let k = 0; k < tLen; k++) {
+                        const curr = (headIdx - k + tLen) % tLen;
+                        const opacity = Math.max(0, 1.0 - k / tLen); // 1.0 at head, 0.0 at tail
+                        
+                        // Color based on velocity (Blue=Slow, Red=Fast)
+                        const speed = body.vel.length();
+                        const hue = Math.max(0.0, 0.6 - speed * 0.02); // Blue(0.6) to Red(0.0)
+                        const col = new THREE.Color().setHSL(hue, 1.0, 0.5);
+                        
+                        entry.tCol[curr*3] = col.r * opacity;
+                        entry.tCol[curr*3+1] = col.g * opacity;
+                        entry.tCol[curr*3+2] = col.b * opacity;
+                    }
+
+                    entry.idx = (headIdx + 1) % tLen;
+                    entry.trail.geometry.attributes.position.needsUpdate = true;
+                    entry.trail.geometry.attributes.color.needsUpdate = true;
+                });
+
+                this.particles.update(dt);
+            }
+
+            garbageCollect(activeBodies) {
+                const activeIds = new Set(activeBodies.map(b => b.id));
+                for (const [id, entry] of this.meshMap) {
+                    if (!activeIds.has(id)) {
+                        this.scene.remove(entry.mesh);
+                        this.scene.remove(entry.trail);
+                        entry.mesh.geometry.dispose();
+                        entry.mesh.material.dispose();
+                        entry.trail.geometry.dispose();
+                        entry.trail.material.dispose();
+                        this.meshMap.delete(id);
+                    }
+                }
+            }
+
+            triggerFlash(pos, energy) {
+                const light = new THREE.PointLight(0xffaa00, 2, 80);
+                light.position.copy(pos);
+                this.scene.add(light);
+                setTimeout(() => this.scene.remove(light), 100);
+            }
+        }
+
+        // ==========================================
+        // 4. MAIN SETUP
+        // ==========================================
+        const scene = new THREE.Scene();
+        // Starfield
+        const stars = new Array(2000).fill().map(() => new THREE.Vector3((Math.random()-0.5)*800, (Math.random()-0.5)*800, (Math.random()-0.5)*800));
+        const starGeo = new THREE.BufferGeometry().setFromPoints(stars);
+        const starMat = new THREE.PointsMaterial({color: 0x666666, size: 0.5});
+        scene.add(new THREE.Points(starGeo, starMat));
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 2000);
+        camera.position.set(0, 100, 150);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.toneMapping = THREE.ReinhardToneMapping;
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        // Bloom
+        const composer = new EffectComposer(renderer);
+        composer.addPass(new RenderPass(scene, camera));
+        const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloom.threshold = 0.1; bloom.strength = 1.0; bloom.radius = 0.5;
+        composer.addPass(bloom);
+
+        const physics = new PhysicsSystem();
+        const visuals = new VisualSystem(scene);
+        const light = new THREE.PointLight(0xffffff, 1);
+        light.position.set(0, 50, 0);
+        scene.add(light); scene.add(new THREE.AmbientLight(0x202020));
+
+        // Initial Scene
+        physics.addBody(new Body(300, V3(0,0,0), V3(0,0,0), 'metal')); // Sun
+        for(let i=0; i<30; i++) {
+            const r = 40 + Math.random()*60;
+            const theta = Math.random()*Math.PI*2;
+            physics.addBody(new Body(Math.random()*5+1, V3(Math.cos(theta)*r, 0, Math.sin(theta)*r), V3(-Math.sin(theta)*2, 0, Math.cos(theta)*2)));
+        }
+
+        // ==========================================
+        // 5. INPUT & MODES
+        // ==========================================
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let dragStart = null, dragLine = null;
+
+        function updateModeUI() {
+            const label = document.getElementById('modeLabel');
+            const text = document.getElementById('modeText');
+            if (CONFIG.spawnMode) {
+                label.innerText = "SPAWN MODE";
+                label.style.color = "#ff4444";
+                text.innerText = "Spawn (Drag to Shoot)";
+                controls.enabled = false;
+                document.body.style.cursor = "crosshair";
+            } else {
+                label.innerText = "VIEW MODE";
+                label.style.color = "white";
+                text.innerText = "View (Orbit)";
+                controls.enabled = true;
+                document.body.style.cursor = "default";
+            }
+        }
+
+        // Drag Logic
+        window.addEventListener('mousedown', (e) => {
+            if (!CONFIG.spawnMode || e.button !== 0 || e.target.closest('.lil-gui')) return;
+            
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            
+            const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+            const target = new THREE.Vector3();
+            raycaster.ray.intersectPlane(plane, target);
+            
+            if (target) {
+                dragStart = target;
+                const geo = new THREE.BufferGeometry().setFromPoints([target, target]);
+                dragLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ff00 }));
+                scene.add(dragLine);
+            }
         });
 
-        const pts = new THREE.Points(geom, mat);
-        this.scene.add(pts);
+        window.addEventListener('mousemove', (e) => {
+            if (dragStart) {
+                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
+                const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+                const target = new THREE.Vector3();
+                raycaster.ray.intersectPlane(plane, target);
 
-        const data = { pts, geom, positions, colors, sizes, ages, lifes, vels, alive, cursor: 0, rateAcc: 0 };
-        this.map.set(body.id, data);
-        return data;
-      }
-
-      emit(body, dt) {
-        const data = this._ensure(body);
-
-        // emit only when hot (ignite) or very fast
-        const speed = body.vel.length();
-        const hot = body.temperature >= CONFIG.igniteTemp;
-        const veryFast = speed >= 18.0;
-        if (!hot && !veryFast) return;
-
-        const intensity = THREE.MathUtils.clamp((body.temperature - CONFIG.igniteTemp) / (CONFIG.glowTemp - CONFIG.igniteTemp), 0, 1);
-        const emitRate = CONFIG.sparksPerSecond * (0.25 + 0.95 * intensity) * (veryFast ? 1.25 : 1.0);
-
-        data.rateAcc += emitRate * dt;
-        const spawnCount = Math.min(16, Math.floor(data.rateAcc));
-        if (spawnCount <= 0) return;
-        data.rateAcc -= spawnCount;
-
-        // color: yellow -> orange -> red depending on intensity
-        const cHot = new THREE.Color().setHSL(0.10 - 0.08 * intensity, 1.0, 0.55);
-
-        for (let s=0;s<spawnCount;s++) {
-          const i = data.cursor;
-          data.cursor = (data.cursor + 1) % CONFIG.maxSparksPerBody;
-
-          data.alive[i] = 1;
-          data.ages[i] = 0;
-          data.lifes[i] = THREE.MathUtils.lerp(CONFIG.sparkLife[0], CONFIG.sparkLife[1], Math.random());
-
-          // position: slightly behind motion for a "tail" look
-          const back = V3().copy(body.vel).normalize().multiplyScalar(-body.radius * (0.6 + Math.random()*1.2));
-          const jitter = V3(
-            (Math.random()-0.5) * body.radius,
-            (Math.random()-0.5) * body.radius,
-            (Math.random()-0.5) * body.radius
-          );
-          const p = V3().copy(body.pos).add(back).add(jitter);
-
-          data.positions[i*3+0] = p.x;
-          data.positions[i*3+1] = p.y;
-          data.positions[i*3+2] = p.z;
-
-          // velocity: opposite to body motion + random cone
-          const base = V3().copy(body.vel).multiplyScalar(-0.15);
-          const rnd = V3(
-            (Math.random()-0.5),
-            (Math.random()-0.35),
-            (Math.random()-0.5)
-          ).normalize().multiplyScalar(THREE.MathUtils.lerp(CONFIG.sparkSpeed[0], CONFIG.sparkSpeed[1], Math.random()));
-          const v = base.add(rnd);
-
-          data.vels[i*3+0] = v.x;
-          data.vels[i*3+1] = v.y;
-          data.vels[i*3+2] = v.z;
-
-          // size
-          data.sizes[i] = THREE.MathUtils.lerp(3.0, 10.0, Math.random()) * (0.55 + intensity);
-
-          // color
-          const flicker = (0.85 + Math.random()*0.3);
-          data.colors[i*3+0] = cHot.r * flicker;
-          data.colors[i*3+1] = cHot.g * flicker;
-          data.colors[i*3+2] = cHot.b * flicker;
-        }
-
-        data.geom.attributes.position.needsUpdate = true;
-        data.geom.attributes.color.needsUpdate = true;
-        data.geom.attributes.aSize.needsUpdate = true;
-      }
-
-      update(body, dt) {
-        const data = this.map.get(body.id);
-        if (!data) return;
-
-        const drag = Math.pow(1.0 - CONFIG.sparkDrag, dt);
-        const g = CONFIG.sparkGravity;
-
-        let anyAlive = false;
-        for (let i=0;i<CONFIG.maxSparksPerBody;i++) {
-          if (!data.alive[i]) continue;
-          anyAlive = true;
-
-          data.ages[i] += dt;
-          if (data.ages[i] >= data.lifes[i]) {
-            data.alive[i] = 0;
-            data.sizes[i] = 0.0;
-            continue;
-          }
-
-          // integrate
-          const vx = data.vels[i*3+0] * drag;
-          const vy = (data.vels[i*3+1] - g*dt) * drag;
-          const vz = data.vels[i*3+2] * drag;
-
-          data.vels[i*3+0] = vx;
-          data.vels[i*3+1] = vy;
-          data.vels[i*3+2] = vz;
-
-          data.positions[i*3+0] += vx * dt;
-          data.positions[i*3+1] += vy * dt;
-          data.positions[i*3+2] += vz * dt;
-
-          // fade size over life
-          const t = data.ages[i] / data.lifes[i];
-          data.sizes[i] *= (1.0 - 0.90 * t);
-        }
-
-        if (anyAlive) {
-          data.geom.attributes.position.needsUpdate = true;
-          data.geom.attributes.aSize.needsUpdate = true;
-        }
-      }
-
-      remove(bodyId) {
-        const data = this.map.get(bodyId);
-        if (!data) return;
-        this.scene.remove(data.pts);
-        data.geom.dispose();
-        data.pts.material.dispose();
-        this.map.delete(bodyId);
-      }
-    }
-
-    // =========================
-    // VISUALS (mesh + line trail)
-    // =========================
-    class VisualSystem {
-      constructor(scene) {
-        this.scene = scene;
-
-        this.meshMap = new Map();
-        this.trailMap = new Map();
-
-        this.geo = new THREE.IcosahedronGeometry(1, 4); // higher detail for nicer shading
-        this.spark = new SparkEmitter(scene);
-      }
-
-      _createTrail(body) {
-        const pts = [];
-        for (let i=0;i<CONFIG.trailLength;i++) pts.push(body.pos.clone());
-
-        const geo = new THREE.BufferGeometry().setFromPoints(pts);
-
-        const colors = new Float32Array(CONFIG.trailLength * 3);
-        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-        const mat = new THREE.LineBasicMaterial({
-          vertexColors: true,
-          transparent: true,
-          opacity: CONFIG.trailOpacity,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false
+                if (target && dragLine) {
+                    const pos = dragLine.geometry.attributes.position.array;
+                    pos[3] = target.x; pos[4] = target.y; pos[5] = target.z;
+                    dragLine.geometry.attributes.position.needsUpdate = true;
+                }
+            }
         });
 
-        const line = new THREE.Line(geo, mat);
-        this.scene.add(line);
-
-        return { line, pts, colors };
-      }
-
-      _updateTrail(body, trail) {
-        // shift old, push new
-        trail.pts.shift();
-        trail.pts.push(body.pos.clone());
-
-        // rewrite positions (fast enough for these sizes)
-        trail.line.geometry.setFromPoints(trail.pts);
-
-        // color by age + temperature (fire gradient)
-        const colorAttr = trail.line.geometry.attributes.color;
-        const temp = body.temperature;
-
-        const fire = temp >= CONFIG.igniteTemp;
-        const fireStrength = THREE.MathUtils.clamp((temp - CONFIG.igniteTemp) / (CONFIG.glowTemp - CONFIG.igniteTemp), 0, 1);
-
-        const baseCol = new THREE.Color(body.matProps.color);
-        const hotCol = new THREE.Color().setHSL(0.08 - 0.06*fireStrength, 1.0, 0.55);
-
-        for (let i=0;i<CONFIG.trailLength;i++) {
-          const t = i / (CONFIG.trailLength - 1);   // old->new
-          const ageFade = t * t;                    // keep old faint
-
-          let c = baseCol.clone().multiplyScalar(0.15 + 0.65*ageFade);
-
-          if (fire) {
-            // towards the head get hotter & brighter
-            const head = Math.pow(ageFade, 1.35);
-            const mix = head * (0.30 + 0.70*fireStrength);
-            c.lerp(hotCol, mix);
-            c.multiplyScalar(0.85 + 1.15*mix);
-          }
-
-          colorAttr.setXYZ(i, c.r, c.g, c.b);
-        }
-        colorAttr.needsUpdate = true;
-      }
-
-      update(bodies, dt) {
-        const active = new Set(bodies.map(b => b.id));
-
-        for (const body of bodies) {
-          // mesh
-          let mesh = this.meshMap.get(body.id);
-          if (!mesh) {
-            const mat = new THREE.MeshPhysicalMaterial({
-              color: 0xffffff,
-              roughness: 0.55,
-              metalness: body.type === 'metal' ? 0.85 : 0.12,
-              clearcoat: body.type === 'ice' ? 0.85 : 0.15,
-              clearcoatRoughness: body.type === 'ice' ? 0.08 : 0.25,
-              sheen: body.type === 'rock' ? 0.15 : 0.05,
-              sheenRoughness: 0.55,
-              flatShading: false,
-              emissive: new THREE.Color(0x000000),
-              emissiveIntensity: 1.0
-            });
-            mesh = new THREE.Mesh(this.geo, mat);
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
-            this.scene.add(mesh);
-            this.meshMap.set(body.id, mesh);
-
-            // trail
-            const trail = this._createTrail(body);
-            this.trailMap.set(body.id, trail);
-          }
-
-          // update mesh transform
-          mesh.position.copy(body.pos);
-          mesh.scale.setScalar(body.radius);
-
-          // heat → color + emissive
-          const heatN = THREE.MathUtils.clamp(body.temperature / CONFIG.maxTemp, 0, 1);
-          const base = new THREE.Color(body.matProps.color);
-          const hot = new THREE.Color(0xff5a1f);
-          mesh.material.color.copy(base).lerp(hot, Math.pow(heatN, 0.7));
-
-          const emi = new THREE.Color(0xff3a16).multiplyScalar(Math.pow(THREE.MathUtils.clamp((body.temperature - CONFIG.igniteTemp) / (CONFIG.maxTemp - CONFIG.igniteTemp), 0, 1), 1.1));
-          mesh.material.emissive.copy(emi);
-
-          // trail update
-          const trail = this.trailMap.get(body.id);
-          this._updateTrail(body, trail);
-
-          // sparks
-          this.spark.emit(body, dt);
-          this.spark.update(body, dt);
-        }
-
-        // cleanup removed bodies (if ever)
-        for (const [id, mesh] of this.meshMap) {
-          if (!active.has(id)) {
-            this.scene.remove(mesh);
-            mesh.geometry.dispose();
-            mesh.material.dispose();
-            this.meshMap.delete(id);
-
-            const trail = this.trailMap.get(id);
-            if (trail) {
-              this.scene.remove(trail.line);
-              trail.line.geometry.dispose();
-              trail.line.material.dispose();
-              this.trailMap.delete(id);
+        window.addEventListener('mouseup', (e) => {
+            if (dragStart) {
+                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
+                const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+                const target = new THREE.Vector3();
+                raycaster.ray.intersectPlane(plane, target);
+                
+                if (target) {
+                    const vel = target.clone().sub(dragStart).multiplyScalar(-0.5);
+                    const b = new Body(CONFIG.spawnMass, dragStart, vel, 'rock');
+                    physics.addBody(b);
+                }
+                scene.remove(dragLine);
+                dragStart = null; dragLine = null;
             }
-            this.spark.remove(id);
-          }
+        });
+
+        // GUI
+        const gui = new GUI();
+        gui.add(CONFIG, 'spawnMode').name('ADD MODE').onChange(updateModeUI);
+        
+        const folderSpawn = gui.addFolder('Spawn Settings');
+        folderSpawn.add(CONFIG, 'spawnMass', 1, 100).name('Mass');
+        folderSpawn.add(CONFIG, 'G', 0.1, 5.0).name('Gravity');
+
+        const folderVis = gui.addFolder('Visuals');
+        folderVis.add(CONFIG, 'trailLength', 10, 300).name('Trail Length');
+        folderVis.add(bloom, 'strength', 0, 3).name('Glow');
+        
+        updateModeUI();
+
+        // Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!CONFIG.spawnMode) controls.update();
+            
+            for(let k=0; k<CONFIG.subSteps; k++) physics.integrate(CONFIG.dt/CONFIG.subSteps);
+            visuals.update(physics.bodies, CONFIG.dt);
+            
+            composer.render();
         }
-      }
-    }
-
-    // =========================
-    // SETUP: scene / camera / renderer
-    // =========================
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x050508, 0.002);
-
-    const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 4000);
-    camera.position.set(0, 120, 260);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.setSize(innerWidth, innerHeight);
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.25;
-    renderer.physicallyCorrectLights = true;
-    document.getElementById('canvas-container').appendChild(renderer.domElement);
-
-    // Controls
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-
-    // Lights (cinematic readable shading)
-    // Soft ambient from sky/ground
-    const hemi = new THREE.HemisphereLight(0x2b3a55, 0x120c08, 0.55);
-    scene.add(hemi);
-
-    // Key light (casts soft shadows)
-    const key = new THREE.DirectionalLight(0xffffff, 2.4);
-    key.position.set(220, 260, 180);
-    key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
-    key.shadow.camera.near = 1;
-    key.shadow.camera.far = 1200;
-    key.shadow.camera.left = -420;
-    key.shadow.camera.right = 420;
-    key.shadow.camera.top = 420;
-    key.shadow.camera.bottom = -420;
-    key.shadow.bias = -0.00008;
-    scene.add(key);
-
-    // Fill light (no shadow)
-    const fill = new THREE.DirectionalLight(0x9cc6ff, 0.75);
-    fill.position.set(-260, 140, -180);
-    scene.add(fill);
-
-    // Rim light for silhouette pop
-    const rim = new THREE.DirectionalLight(0xff7a40, 0.55);
-    rim.position.set(-40, 180, 320);
-    scene.add(rim);
-
-    // "Sun" point for highlights in the cluster
-    const sun = new THREE.PointLight(0xffffff, 1200, 0, 2);
-    sun.position.set(120, 140, 90);
-    sun.castShadow = false;
-    scene.add(sun);
-
-    // Procedural starfield backdrop (cheap)
-    {
-      const starGeo = new THREE.BufferGeometry();
-      const starCount = 1800;
-      const pos = new Float32Array(starCount * 3);
-      for (let i=0;i<starCount;i++){
-        const r = 1500 + Math.random()*1200;
-        const th = Math.random()*Math.PI*2;
-        const u = Math.random()*2 - 1;
-        const ph = Math.acos(u);
-        pos[i*3+0] = r * Math.sin(ph) * Math.cos(th);
-        pos[i*3+1] = r * Math.cos(ph);
-        pos[i*3+2] = r * Math.sin(ph) * Math.sin(th);
-      }
-      starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      const starMat = new THREE.PointsMaterial({
-        size: 1.2,
-        sizeAttenuation: true,
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0.8,
-        depthWrite: false
-      });
-      const stars = new THREE.Points(starGeo, starMat);
-      scene.add(stars);
-    }
-
-    // Post
-    const composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.5, 0.35, 0.85);
-    bloom.strength = 1.05;
-    bloom.radius = 0.42;
-    bloom.threshold = 0.03;
-    composer.addPass(bloom);
-
-    // Systems
-    const physics = new PhysicsSystem();
-    const visuals = new VisualSystem(scene);
-
-    // =========================
-    // ADD MODE + INPUT
-    // =========================
-    let addMode = false;
-    let isDraggingSpawn = false;
-
-    const modeUI = document.getElementById('mode-ui');
-    const addPanel = document.getElementById('add-panel');
-    const massRange = document.getElementById('massRange');
-    const massVal = document.getElementById('massVal');
-    const randMass = document.getElementById('randMass');
-
-    let userMass = Number(massRange?.value ?? 12);
-
-    function syncMassUI(){
-      if (massVal) massVal.textContent = String(Math.round(userMass));
-      if (massRange) massRange.value = String(Math.round(userMass));
-      // Disable slider when random is on
-      if (massRange && randMass) massRange.disabled = randMass.checked;
-      if (massRange) massRange.style.opacity = (massRange.disabled ? '0.55' : '1.0');
-    }
-
-    if (massRange) {
-      massRange.addEventListener('input', () => {
-        userMass = Number(massRange.value);
-        syncMassUI();
-      });
-    }
-    if (randMass) {
-      randMass.addEventListener('change', syncMassUI);
-    }
-    syncMassUI();
-
-    function setAddMode(v) {
-      addMode = v;
-      modeUI.style.display = addMode ? 'inline-block' : 'none';
-      addPanel.style.display = addMode ? 'block' : 'none';
-
-      // Lock ALL orbit interaction when addMode is on.
-      // (Still keep controls.update() for damping to settle.)
-      controls.enabled = !addMode;
-    }
-
-    // Toggle with A
-    window.addEventListener('keydown', (e) => {
-      if (e.code === 'KeyA') {
-        setAddMode(!addMode);
-      }
-    });
-
-    // Prevent context menu when using right mouse
-    window.addEventListener('contextmenu', (e) => e.preventDefault());
-
-    const raycaster = new THREE.Raycaster();
-    const mouse = new THREE.Vector2();
-
-    // Ground plane used for spawning (y=0)
-    const spawnPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
-
-    const dragStart = V3();
-    const dragNow = V3();
-
-    // Trajectory preview line (while dragging in add mode)
-    const predGeom = new THREE.BufferGeometry();
-    const predMat = new THREE.LineBasicMaterial({
-      color: 0xff6a2a,
-      transparent: true,
-      opacity: 0.9,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    });
-    const predLine = new THREE.Line(predGeom, predMat);
-    predLine.visible = false;
-    scene.add(predLine);
-
-    function screenToPlane(clientX, clientY, out) {
-      mouse.x = (clientX / innerWidth) * 2 - 1;
-      mouse.y = -(clientY / innerHeight) * 2 + 1;
-      raycaster.setFromCamera(mouse, camera);
-      raycaster.ray.intersectPlane(spawnPlane, out);
-      return out;
-    }
-
-    // Predict future arc for a new body (without mutating simulation)
-    function predictTrajectory(p0, v0) {
-      const points = [];
-      const dt = CONFIG.predictDt;
-      const total = Math.min(CONFIG.predictMaxPoints, Math.floor(CONFIG.predictSeconds / dt));
-
-      let p = p0.clone();
-      let v = v0.clone();
-
-      for (let i=0;i<total;i++) {
-        // accel from existing bodies (static snapshot)
-        const a = V3();
-        for (const b of physics.bodies) {
-          const dx = b.pos.x - p.x;
-          const dy = b.pos.y - p.y;
-          const dz = b.pos.z - p.z;
-          const distSq = dx*dx + dy*dy + dz*dz + CONFIG.softening;
-          const invDist = 1 / Math.sqrt(distSq);
-          const invDist3 = invDist * invDist * invDist;
-          const f = CONFIG.G * b.mass * invDist3; // per unit mass
-          a.x += dx * f;
-          a.y += dy * f;
-          a.z += dz * f;
-        }
-
-        // semi-implicit step
-        v.addScaledVector(a, dt);
-        p.addScaledVector(v, dt);
-        points.push(p.clone());
-      }
-      return points;
-    }
-
-    function updatePredictionLine() {
-      if (!isDraggingSpawn) return;
-      const vel = V3().subVectors(dragStart, dragNow).multiplyScalar(CONFIG.spawnVelScale);
-      const pts = [dragStart.clone(), ...predictTrajectory(dragStart, vel)];
-      predGeom.setFromPoints(pts);
-      predLine.visible = true;
-    }
-
-    window.addEventListener('mousedown', (e) => {
-      if (!addMode) return;
-
-      if (e.button === 0) { // left
-        isDraggingSpawn = true;
-        screenToPlane(e.clientX, e.clientY, dragStart);
-        dragNow.copy(dragStart);
-        updatePredictionLine();
-      }
-    });
-
-    window.addEventListener('mousemove', (e) => {
-      if (!addMode || !isDraggingSpawn) return;
-      screenToPlane(e.clientX, e.clientY, dragNow);
-      updatePredictionLine();
-    });
-
-    window.addEventListener('mouseup', (e) => {
-      if (!addMode) return;
-
-      if (e.button === 0 && isDraggingSpawn) {
-        screenToPlane(e.clientX, e.clientY, dragNow);
-
-        const vel = V3().subVectors(dragStart, dragNow).multiplyScalar(CONFIG.spawnVelScale);
-
-        const mass = (randMass && randMass.checked)
-          ? THREE.MathUtils.lerp(CONFIG.spawnMass[0], CONFIG.spawnMass[1], Math.random())
-          : Math.max(1, userMass);
-        const types = ['rock','metal','ice'];
-        const type = types[(Math.random()*types.length)|0];
-        const temp = THREE.MathUtils.lerp(CONFIG.spawnTemp[0], CONFIG.spawnTemp[1], Math.random());
-
-        physics.addBody(new Body(mass, dragStart, vel, type, temp));
-
-        isDraggingSpawn = false;
-        predLine.visible = false;
-      }
-    });
-
-    // If user leaves window while dragging
-    window.addEventListener('blur', () => {
-      isDraggingSpawn = false;
-      predLine.visible = false;
-    });
-
-    // =========================
-    // SCENARIO: solar-ish system
-    // =========================
-    // Central star
-    physics.addBody(new Body(170, V3(0,0,0), V3(0,0,0), 'metal', 90));
-
-    // orbiting bodies
-    for (let i=0;i<60;i++) {
-      const dist = 46 + Math.random()*110;
-      const ang = Math.random()*Math.PI*2;
-      const pos = V3(Math.cos(ang)*dist, (Math.random()-0.5)*6.0, Math.sin(ang)*dist);
-      const v = Math.sqrt(CONFIG.G * 170 / dist);
-      const vel = V3(-Math.sin(ang), 0, Math.cos(ang)).multiplyScalar(v * (0.85 + Math.random()*0.35));
-      const mass = 0.7 + Math.random()*2.2;
-      const type = (Math.random() < 0.12) ? 'ice' : (Math.random() < 0.30 ? 'metal' : 'rock');
-      physics.addBody(new Body(mass, pos, vel, type, 0));
-    }
-
-    // =========================
-    // LOOP
-    // =========================
-    let lastT = performance.now();
-
-    function animate(tNow) {
-      requestAnimationFrame(animate);
-
-      const dtReal = Math.min(0.033, Math.max(0.001, (tNow - lastT) / 1000));
-      lastT = tNow;
-
-      // physics substeps
-      const dt = CONFIG.dt;
-      for (let s=0;s<CONFIG.subSteps;s++) {
-        physics.integrate(dt / CONFIG.subSteps);
-      }
-
-      // visuals
-      visuals.update(physics.bodies, dtReal);
-
-      // camera
-      controls.update();
-
-      composer.render();
-    }
-
-    // Initial gravity
-    physics.computeGravity();
-    animate(performance.now());
-
-    // =========================
-    // RESIZE
-    // =========================
-    window.addEventListener('resize', () => {
-      camera.aspect = innerWidth/innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(innerWidth, innerHeight);
-      composer.setSize(innerWidth, innerHeight);
-      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    });
-  </script>
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight);
+        });
+        animate();
+    </script>
 </body>
 </html>
