@@ -848,7 +848,7 @@
         
         const folderInteract = gui.addFolder('Interaction');
         folderInteract.add(CONFIG, 'interactionMode', ['view', 'add']).name('Mode').onChange(updateModeUI);
-        folderInteract.add(CONFIG, 'spawnMass', 1, 500).name('Spawn Mass');
+        folderInteract.add(CONFIG, 'spawnMass', 1, 5000).name('Spawn Mass');
 
         const folderPhys = gui.addFolder('Physics');
         folderPhys.add(CONFIG, 'G', 0.1, 5.0).name('Gravity G');
