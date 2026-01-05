@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>N-Body Sim</title>
+    <title>Realistic N-Body Sim</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #050508; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -31,7 +31,7 @@
     <div id="canvas-container"></div>
     <div id="mode-ui" class="mode-indicator">Mode: View</div>
     <div id="instructions">
-        <h2>N-Body Fracture & Fusion Sim</h2>
+        <h2>Realistic N-Body Fusion</h2>
         <p>Right Click: <b>Pan Camera</b></p>
         <p>Left Click (Add Mode): <b>Spawn Body</b></p>
         <p>Left Click (View Mode): <b>Rotate Camera</b></p>
@@ -50,40 +50,159 @@
         // 1. CONFIGURATION
         // ==========================================
         const CONFIG = {
-            // Physics
             G: 0.5,                
             softening: 0.5,        
             dt: 0.016,             
             subSteps: 2,           
-            maxBodies: 400,        
-            trailLength: 100,      
+            maxBodies: 300,        
+            trailLength: 80,      
             
-            // Interaction
-            interactionMode: 'view', // 'view' or 'add'
-            spawnMass: 20,           // User defined mass
+            interactionMode: 'view', 
+            spawnMass: 20,           
             
-            // Fracture Props
-            fractureThreshold: 25,   // 파괴 임계값 상향 (융합을 더 잘 보기 위해)
+            fractureThreshold: 25,   
             minFragmentMass: 0.2,  
+            mergeTime: 0.5,          
             
-            // Fusion Props
-            mergeTime: 0.5,          // 0.5초 이상 붙어있으면 융합
-            
-            // Thermal Props
-            heatDecay: 0.995,      
-            heatToGlow: 2.0,       
+            heatDecay: 0.998,      
+            heatToGlow: 3.0,       
             
             materials: {
-                rock: { density: 1.0, color: 0x888888, emit: 0x331100, roughness: 0.9 },
-                metal: { density: 3.0, color: 0xaaaaaa, emit: 0x001133, roughness: 0.4 },
-                ice: { density: 0.5, color: 0xaaccff, emit: 0x0044aa, roughness: 0.1 }
+                rock: { density: 1.0, color1: new THREE.Color(0.4, 0.3, 0.2), color2: new THREE.Color(0.1, 0.1, 0.1) },
+                metal: { density: 3.0, color1: new THREE.Color(0.6, 0.6, 0.7), color2: new THREE.Color(0.3, 0.3, 0.4) },
+                ice: { density: 0.5, color1: new THREE.Color(0.8, 0.9, 1.0), color2: new THREE.Color(0.1, 0.3, 0.6) }
             }
         };
 
         const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 
         // ==========================================
-        // 2. PHYSICS ENGINE
+        // 2. SHADERS (REALISM)
+        // ==========================================
+        
+        const planetVertexShader = `
+            varying vec2 vUv;
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            varying vec3 vViewPosition;
+
+            void main() {
+                vUv = uv;
+                vNormal = normalize(normalMatrix * normal);
+                vPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+                vec4 mvPosition = viewMatrix * modelMatrix * vec4(position, 1.0);
+                vViewPosition = -mvPosition.xyz;
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+
+        const planetFragmentShader = `
+            uniform vec3 color1;
+            uniform vec3 color2;
+            uniform float time;
+            uniform float temperature;
+            uniform float seed;
+            uniform vec3 sunPosition;
+
+            varying vec2 vUv;
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            varying vec3 vViewPosition;
+
+            // Simplex Noise (Simplified)
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+            vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+            float snoise(vec3 v) {
+                const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
+                const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+                vec3 i  = floor(v + dot(v, C.yyy) );
+                vec3 x0 = v - i + dot(i, C.xxx) ;
+                vec3 g = step(x0.yzx, x0.xyz);
+                vec3 l = 1.0 - g;
+                vec3 i1 = min( g.xyz, l.zxy );
+                vec3 i2 = max( g.xyz, l.zxy );
+                vec3 x1 = x0 - i1 + C.xxx;
+                vec3 x2 = x0 - i2 + C.yyy;
+                vec3 x3 = x0 - D.yyy;
+                i = mod289(i);
+                vec4 p = permute( permute( permute(
+                            i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+                        + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
+                        + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+                float n_ = 0.142857142857;
+                vec3  ns = n_ * D.wyz - D.xzx;
+                vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+                vec4 x_ = floor(j * ns.z);
+                vec4 y_ = floor(j - 7.0 * x_ );
+                vec4 x = x_ *ns.x + ns.yyyy;
+                vec4 y = y_ *ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y);
+                vec4 b0 = vec4( x.xy, y.xy );
+                vec4 b1 = vec4( x.zw, y.zw );
+                vec4 s0 = floor(b0)*2.0 + 1.0;
+                vec4 s1 = floor(b1)*2.0 + 1.0;
+                vec4 sh = -step(h, vec4(0.0));
+                vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+                vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+                vec3 p0 = vec3(a0.xy,h.x);
+                vec3 p1 = vec3(a0.zw,h.y);
+                vec3 p2 = vec3(a1.xy,h.z);
+                vec3 p3 = vec3(a1.zw,h.w);
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+                p0 *= norm.x;
+                p1 *= norm.y;
+                p2 *= norm.z;
+                p3 *= norm.w;
+                vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m;
+                return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
+            }
+
+            void main() {
+                // Noise generation for surface detail
+                float n = snoise(vPosition * 0.5 + vec3(seed));
+                float n2 = snoise(vPosition * 2.0 + vec3(seed * 2.0));
+                float detail = n * 0.6 + n2 * 0.4;
+
+                // Base Color Mixing
+                vec3 finalColor = mix(color2, color1, smoothstep(-0.2, 0.5, detail));
+
+                // Lighting (Directional Sun)
+                vec3 lightDir = normalize(sunPosition - vPosition);
+                vec3 viewDir = normalize(vViewPosition);
+                vec3 normal = normalize(vNormal);
+                
+                // Add bumpiness to normal
+                normal = normalize(normal + vec3(detail * 0.1));
+
+                float diff = max(dot(normal, lightDir), 0.0);
+                
+                // Atmosphere / Fresnel (Rim Light)
+                float fresnel = pow(1.0 - dot(viewDir, normal), 3.0);
+                vec3 atmosphere = color1 * fresnel * 0.5;
+
+                // Temperature Glow (Magma)
+                float heatIntensity = clamp(temperature / 50.0, 0.0, 1.0);
+                // Heat appears in cracks (inverted noise)
+                float crack = smoothstep(0.4, 0.6, abs(n2)); 
+                vec3 heatColor = vec3(1.0, 0.3, 0.1) * (1.0 - crack) * heatIntensity * 5.0;
+                
+                // Full body glow if very hot
+                vec3 bodyGlow = vec3(1.0, 0.5, 0.2) * max(0.0, temperature - 50.0) * 0.005;
+
+                // Combine
+                vec3 ambient = vec3(0.05);
+                vec3 lighting = finalColor * (diff + ambient) + atmosphere + heatColor + bodyGlow;
+
+                gl_FragColor = vec4(lighting, 1.0);
+            }
+        `;
+
+        // ==========================================
+        // 3. PHYSICS ENGINE
         // ==========================================
         
         class Body {
@@ -99,7 +218,6 @@
                 
                 this.type = type;
                 this.matProps = CONFIG.materials[type];
-                // 반지름 계산 (구체 부피 공식 역산)
                 this.radius = Math.pow((3 * mass) / (4 * Math.PI * this.matProps.density), 1/3);
                 
                 this.temperature = temp;
@@ -115,7 +233,7 @@
         class PhysicsSystem {
             constructor() {
                 this.bodies = [];
-                this.contactPairs = new Map(); // 접촉 시간 추적용
+                this.contactPairs = new Map();
             }
 
             addBody(body) {
@@ -178,7 +296,6 @@
                 const N = this.bodies.length;
                 const vec = new THREE.Vector3();
                 const relVel = new THREE.Vector3();
-                
                 const currentFrameContacts = new Set();
 
                 for (let i = 0; i < N; i++) {
@@ -194,11 +311,9 @@
                         const minDist = A.radius + B.radius;
 
                         if (distSq < minDist * minDist) {
-                            // 접촉 발생
                             const pairId = [A.id, B.id].sort().join('-');
                             currentFrameContacts.add(pairId);
                             
-                            // 접촉 시간 누적
                             const prevContactTime = this.contactPairs.get(pairId) || 0;
                             const newContactTime = prevContactTime + dt;
                             this.contactPairs.set(pairId, newContactTime);
@@ -209,9 +324,8 @@
                             relVel.subVectors(B.vel, A.vel);
                             const velAlongNormal = relVel.dot(normal);
 
-                            // 충돌 계산
                             if (velAlongNormal < 0) {
-                                const restitution = 0.2; // 탄성 계수를 낮춰서 잘 붙게 함
+                                const restitution = 0.2; 
                                 const jImpulse = -(1 + restitution) * velAlongNormal / (A.invMass + B.invMass);
                                 const impulse = normal.clone().multiplyScalar(jImpulse);
                                 
@@ -223,16 +337,14 @@
 
                                 const Q = impactEnergy / (A.mass + B.mass);
                                 
-                                // 1. 융합 체크 (일정 시간 이상 접촉 & 파괴될 만큼 강한 충돌이 아님)
                                 if (newContactTime > CONFIG.mergeTime && Q < CONFIG.fractureThreshold * 2) {
                                     this.mergeBodies(A, B, newBodies);
                                     removedIndices.add(i);
                                     removedIndices.add(j);
                                     this.contactPairs.delete(pairId);
-                                    continue; // 융합되었으므로 물리 계산 중단
+                                    continue;
                                 }
 
-                                // 2. 파괴 체크
                                 const isFracture = Q > CONFIG.fractureThreshold;
 
                                 const correction = normal.clone().multiplyScalar((minDist - dist) / (A.invMass + B.invMass) * 0.8);
@@ -246,11 +358,9 @@
                                     visuals.triggerFlash(A.pos.clone().add(B.pos).multiplyScalar(0.5), impactEnergy);
                                     this.contactPairs.delete(pairId);
                                 } else {
-                                    // 일반 충돌 반동
                                     A.vel.sub(impulse.clone().multiplyScalar(A.invMass));
                                     B.vel.add(impulse.clone().multiplyScalar(B.invMass));
                                     
-                                    // 마찰
                                     const tangent = relVel.clone().sub(normal.clone().multiplyScalar(velAlongNormal)).normalize();
                                     const jt = -relVel.dot(tangent) * 0.5 / (A.invMass + B.invMass);
                                     const tangentImpulse = tangent.multiplyScalar(jt);
@@ -263,7 +373,6 @@
                     }
                 }
 
-                // 접촉이 끝난 쌍은 맵에서 제거
                 for (const key of this.contactPairs.keys()) {
                     if (!currentFrameContacts.has(key)) {
                         this.contactPairs.delete(key);
@@ -281,28 +390,21 @@
             }
 
             mergeBodies(A, B, newBodiesList) {
-                // 질량 보존
                 const newMass = A.mass + B.mass;
-                // 운동량 보존을 통한 속도 계산
                 const momentumA = A.vel.clone().multiplyScalar(A.mass);
                 const momentumB = B.vel.clone().multiplyScalar(B.mass);
                 const newVel = momentumA.add(momentumB).multiplyScalar(1 / newMass);
                 
-                // 무게 중심 위치
                 const posA = A.pos.clone().multiplyScalar(A.mass);
                 const posB = B.pos.clone().multiplyScalar(B.mass);
                 const newPos = posA.add(posB).multiplyScalar(1 / newMass);
 
-                // 온도 합산 (에너지 보존의 일종)
                 const newTemp = (A.temperature * A.mass + B.temperature * B.mass) / newMass;
-                
-                // 더 큰 질량의 타입을 따라감
                 const type = A.mass > B.mass ? A.type : B.type;
 
                 const mergedBody = new Body(newMass, newPos, newVel, type, newTemp);
                 newBodiesList.push(mergedBody);
                 
-                // 융합 이펙트 (약한 플래시)
                 visuals.triggerFlash(newPos, newMass * 0.5);
             }
 
@@ -342,7 +444,7 @@
         }
 
         // ==========================================
-        // 3. VISUALS & RENDERING
+        // 4. VISUALS & RENDERING
         // ==========================================
 
         class VisualSystem {
@@ -352,18 +454,18 @@
                 this.meshMap = new Map();
                 this.trailMap = new Map(); 
                 
-                this.geoLow = new THREE.IcosahedronGeometry(1, 0);
-                this.geoHigh = new THREE.IcosahedronGeometry(1, 1);
+                // Use a higher detail geometry for realistic planets
+                this.geo = new THREE.IcosahedronGeometry(1, 4);
                 
                 // Particle System
                 this.particles = [];
                 const pGeo = new THREE.BufferGeometry();
                 const pMat = new THREE.PointsMaterial({ 
-                    color: 0xff5500,
-                    size: 0.8, 
+                    color: 0xffaa44,
+                    size: 1.2, 
                     blending: THREE.AdditiveBlending, 
                     transparent: true, 
-                    opacity: 0.6,
+                    opacity: 0.8,
                     depthWrite: false 
                 });
                 this.particleSystem = new THREE.Points(pGeo, pMat);
@@ -379,24 +481,33 @@
                 this.vecPerp = new THREE.Vector3();
             }
 
+            createPlanetMaterial(type) {
+                const props = CONFIG.materials[type];
+                return new THREE.ShaderMaterial({
+                    uniforms: {
+                        color1: { value: props.color1 },
+                        color2: { value: props.color2 },
+                        time: { value: 0 },
+                        temperature: { value: 0 },
+                        seed: { value: Math.random() * 100 },
+                        sunPosition: { value: new THREE.Vector3(50, 50, 50) }
+                    },
+                    vertexShader: planetVertexShader,
+                    fragmentShader: planetFragmentShader
+                });
+            }
+
             update(bodies, dt) {
                 const currentIds = new Set();
+                const time = performance.now() * 0.001;
                 
                 bodies.forEach(body => {
                     currentIds.add(body.id);
                     let mesh = this.meshMap.get(body.id);
 
                     if (!mesh) {
-                        const matProps = body.matProps;
-                        const mat = new THREE.MeshStandardMaterial({
-                            color: matProps.color,
-                            roughness: matProps.roughness,
-                            emissive: 0x000000,
-                            flatShading: true
-                        });
-                        
-                        const geo = body.mass > 5 ? this.geoHigh : this.geoLow;
-                        mesh = new THREE.Mesh(geo, mat);
+                        const mat = this.createPlanetMaterial(body.type);
+                        mesh = new THREE.Mesh(this.geo, mat);
                         this.scene.add(mesh);
                         this.meshMap.set(body.id, mesh);
 
@@ -415,7 +526,7 @@
                         trailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
                         
                         const trailMat = new THREE.MeshBasicMaterial({ 
-                            color: matProps.color, 
+                            color: body.matProps.color1, 
                             transparent: true, 
                             opacity: 0.3,
                             blending: THREE.AdditiveBlending,
@@ -433,20 +544,19 @@
 
                     mesh.position.copy(body.pos);
                     mesh.scale.setScalar(body.radius);
-                    mesh.rotation.x += body.vel.z * 0.1 * dt;
-                    mesh.rotation.y += body.vel.x * 0.1 * dt;
+                    
+                    // Rotate planet
+                    mesh.rotation.y += dt * 0.2;
+
+                    // Update Material Uniforms
+                    mesh.material.uniforms.time.value = time;
+                    mesh.material.uniforms.temperature.value = body.temperature;
 
                     if (body.temperature > 50) {
-                        const intensity = Math.min(body.temperature / 1000, 1.0);
-                        mesh.material.emissive.setRGB(1.0, Math.max(0, 1.0 - intensity * 0.5), Math.max(0, 1.0 - intensity));
-                        mesh.material.emissiveIntensity = intensity * CONFIG.heatToGlow;
-
                         const spawnChance = Math.min(0.1 + (body.temperature - 50) * 0.002, 1.0);
                         if (Math.random() < spawnChance) {
                             this.spawnTrail(body);
                         }
-                    } else {
-                        mesh.material.emissive.setHex(0x000000);
                     }
 
                     // Update Ribbon
@@ -507,13 +617,13 @@
             }
 
             triggerFlash(pos, energy) {
-                const light = new THREE.PointLight(0xffaa00, 1, 50);
+                const light = new THREE.PointLight(0xffaa00, 1, 60);
                 light.position.copy(pos);
-                light.intensity = Math.min(energy * 0.1, 10);
+                light.intensity = Math.min(energy * 0.2, 15);
                 this.scene.add(light);
                 
                 const fade = () => {
-                    light.intensity *= 0.8;
+                    light.intensity *= 0.85;
                     if (light.intensity < 0.1) {
                         this.scene.remove(light);
                         light.dispose();
@@ -578,7 +688,7 @@
         }
 
         // ==========================================
-        // 4. MAIN INIT & LOOP
+        // 5. MAIN INIT & LOOP
         // ==========================================
 
         const scene = new THREE.Scene();
@@ -586,35 +696,34 @@
         {
             const starGeo = new THREE.BufferGeometry();
             const starPos = [];
-            for(let i=0; i<2000; i++) {
-                starPos.push((Math.random()-0.5)*1000, (Math.random()-0.5)*1000, (Math.random()-0.5)*1000);
+            for(let i=0; i<3000; i++) {
+                starPos.push((Math.random()-0.5)*1500, (Math.random()-0.5)*1500, (Math.random()-0.5)*1500);
             }
             starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
-            const starMat = new THREE.PointsMaterial({color: 0x555555, size: 0.7});
+            const starMat = new THREE.PointsMaterial({color: 0x888888, size: 0.8, transparent: true, opacity: 0.8});
             scene.add(new THREE.Points(starGeo, starMat));
         }
 
-        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 3000);
         camera.position.set(0, 80, 150);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: false });
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.toneMapping = THREE.ReinhardToneMapping;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
         document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-        // Controls Setup Update
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
-        // Key Change: Map Right Click to Pan, Left Click to Rotate
         controls.mouseButtons = {
             LEFT: THREE.MOUSE.ROTATE,
             MIDDLE: THREE.MOUSE.DOLLY,
-            RIGHT: THREE.MOUSE.PAN  // 우클릭: 카메라 이동
+            RIGHT: THREE.MOUSE.PAN
         };
 
         const renderScene = new RenderPass(scene, camera);
         const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
-        bloomPass.threshold = 0.2;
+        bloomPass.threshold = 0.3; 
         bloomPass.strength = 1.2;
         bloomPass.radius = 0.5;
         
@@ -625,11 +734,12 @@
         const physics = new PhysicsSystem();
         const visuals = new VisualSystem(scene, camera);
 
-        const ambientLight = new THREE.AmbientLight(0x222222);
-        scene.add(ambientLight);
-        const sunLight = new THREE.DirectionalLight(0xffffff, 0.5);
-        sunLight.position.set(50, 50, 50);
+        // Sun Light (Visual representation matching shader light dir)
+        const sunPos = new THREE.Vector3(50, 50, 50);
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        sunLight.position.copy(sunPos);
         scene.add(sunLight);
+        scene.add(new THREE.AmbientLight(0x111111));
 
         function resetScenario(type) {
             physics.bodies = [];
@@ -644,7 +754,8 @@
                     const velocity = Math.sqrt(CONFIG.G * 500 / dist);
                     const pos = V3(Math.cos(angle)*dist, (Math.random()-0.5)*2, Math.sin(angle)*dist);
                     const vel = V3(-Math.sin(angle)*velocity, 0, Math.cos(angle)*velocity);
-                    physics.addBody(new Body(Math.random() * 2 + 0.5, pos, vel, 'rock'));
+                    const type = Math.random() > 0.8 ? 'ice' : 'rock';
+                    physics.addBody(new Body(Math.random() * 2 + 0.5, pos, vel, type));
                 }
             } else if (type === 'collision') {
                 physics.addBody(new Body(100, V3(-40, 0, 0), V3(1, 0, 0), 'rock'));
@@ -654,7 +765,7 @@
         
         resetScenario('galaxy');
 
-        // Input Handling Logic
+        // Input Handling
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
         let dragStart = null;
@@ -667,13 +778,9 @@
         }
 
         window.addEventListener('mousedown', (e) => {
-            // 좌클릭(0)이면서 GUI 클릭이 아닐 때
             if (e.button === 0 && !e.target.closest('.lil-gui')) { 
-                
-                // ADD 모드일 때만 Drag 로직 실행
                 if (CONFIG.interactionMode === 'add') {
-                    controls.enabled = false; // 카메라 회전 비활성화
-
+                    controls.enabled = false;
                     mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
                     
@@ -690,7 +797,6 @@
                         scene.add(dragLine);
                     }
                 }
-                // VIEW 모드일 때는 OrbitControls가 자동으로 회전 처리
             }
         });
 
@@ -714,10 +820,8 @@
         });
 
         window.addEventListener('mouseup', (e) => {
-            // ADD 모드였으면 Body 생성 및 컨트롤 복구
             if (CONFIG.interactionMode === 'add') {
-                controls.enabled = true; // 컨트롤 다시 활성화
-
+                controls.enabled = true;
                 if (dragStart) {
                     mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
@@ -728,10 +832,8 @@
                     
                     if (target) {
                         const vel = target.clone().sub(dragStart).multiplyScalar(-0.5); 
-                        // 설정된 질량으로 생성
                         physics.addBody(new Body(CONFIG.spawnMass, dragStart, vel, 'rock'));
                     }
-                    
                     if (dragLine) {
                         scene.remove(dragLine);
                         dragLine = null;
@@ -785,6 +887,7 @@
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
             composer.setSize(window.innerWidth, window.innerHeight);
+            bloomPass.setSize(new THREE.Vector2(window.innerWidth, window.innerHeight));
         });
 
         animate();
